@@ -81,7 +81,7 @@
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "15.0.7",
-    "@testing-library/user-event": "14.5.2",
+    "@testing-library/user-event": "14.6.7",
     "@types/d3": "^7.4.3",
     "@types/diff-match-patch": "^1.0.36",
     "@types/jest-axe": "3.5.9",
