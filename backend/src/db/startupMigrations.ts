@@ -75,8 +75,9 @@ export async function runStartupMigrations(
     logger.error('startup migrations failed', error);
     throw error;
   } finally {
-    if (ownsClient && typeof (redis as { quit?: () => Promise<unknown> }).quit === 'function') {
-      await (redis as { quit: () => Promise<unknown> }).quit().catch(() => undefined);
+    const closable = redis as unknown as { quit?: () => Promise<unknown> };
+    if (ownsClient && typeof closable.quit === 'function') {
+      await closable.quit().catch(() => undefined);
     }
   }
 }
