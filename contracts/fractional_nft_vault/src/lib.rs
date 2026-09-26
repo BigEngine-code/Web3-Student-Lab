@@ -24,12 +24,16 @@
 #[cfg(test)]
 extern crate std;
 
+use commit_reveal_rng::{
+    bid_commitment, extend_deadline, should_extend_deadline, Bid, ANTI_SNIPE_EXTENSION_SECS,
+    ANTI_SNIPE_WINDOW_SECS,
+};
 use contract_events::{
     publish_auction, publish_bid, publish_payout, publish_shares_minted, publish_vault_lock,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, BytesN, Env, IntoVal, Vec,
+    Address, BytesN, Env, IntoVal, Map, Vec,
 };
 
 #[contracttype]
@@ -47,6 +51,8 @@ pub enum DataKey {
     Finalized,
     NftLocked,
     PayoutClaimed(Address),
+    /// Commit-reveal (Vickrey) auction state.
+    CrAuction,
 }
 
 /// Live buyout auction state.
@@ -57,10 +63,57 @@ pub struct AuctionState {
     pub min_bid: i128,
     /// Ledger timestamp after which the auction can be finalized.
     pub deadline: u64,
+    /// Ledger timestamp at which the auction was started.
+    pub started_at: u64,
+    /// Number of anti-snipe deadline extensions applied so far.
+    pub extensions: u32,
     /// Current leading bidder (escrowed in the vault).
     pub current_bidder: Option<Address>,
     /// Current leading bid amount.
     pub current_bid: i128,
+}
+
+/// A blinded commit-reveal (Vickrey) auction.
+///
+/// During the commit phase bidders publish `sha256(amount_be || nonce)` plus an
+/// anti-spam deposit. During the reveal phase they reveal `(amount, nonce)`;
+/// the contract verifies the commitment and escrows the amount. The highest
+/// revealer wins but pays only the **second-highest** revealed amount
+/// (Vickrey/second-price). Deposits from commitments that are never revealed
+/// are forfeited into the buyout treasury.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CommitRevealAuction {
+    /// Minimum acceptable revealed bid.
+    pub min_bid: i128,
+    /// Anti-spam deposit required per commitment.
+    pub deposit: i128,
+    /// Ledger timestamp at which committing closes.
+    pub commit_deadline: u64,
+    /// Ledger timestamp at which revealing closes.
+    pub reveal_deadline: u64,
+    /// Ledger timestamp at which the auction started.
+    pub started_at: u64,
+    /// Number of anti-snipe deadline extensions applied so far.
+    pub extensions: u32,
+    /// Highest valid revealer.
+    pub highest_bidder: Option<Address>,
+    /// Highest revealed amount.
+    pub highest_bid: i128,
+    /// Second-highest revealed amount (the Vickrey price).
+    pub second_highest_bid: i128,
+    /// Number of valid reveals.
+    pub revealed_count: u32,
+    /// Deposits forfeited by bidders who never revealed.
+    pub forfeited_deposits: i128,
+    /// Whether the auction has been finalized.
+    pub finalized: bool,
+    /// Commitment published by each bidder.
+    pub commits: Map<Address, BytesN<32>>,
+    /// Escrowed amount for each valid reveal.
+    pub reveals: Map<Address, i128>,
+    /// Outstanding (not yet refunded) deposit for each bidder.
+    pub deposits: Map<Address, i128>,
 }
 
 #[contracterror]
@@ -79,6 +132,8 @@ pub enum VaultError {
     NoShares = 11,
     ShareMismatch = 12,
     NftNotLocked = 13,
+    AlreadyCommitted = 14,
+    InvalidCommitment = 15,
 }
 
 #[contract]
@@ -236,9 +291,12 @@ impl FractionalNftVaultContract {
             panic_with_error!(&env, VaultError::NftNotLocked);
         }
 
+        let now = env.ledger().timestamp();
         let auction = AuctionState {
             min_bid,
-            deadline: env.ledger().timestamp() + duration,
+            deadline: now.saturating_add(duration),
+            started_at: now,
+            extensions: 0,
             current_bidder: None,
             current_bid: 0,
         };
@@ -304,6 +362,20 @@ impl FractionalNftVaultContract {
                 auction.current_bidder = Some(bidder.clone());
                 auction.current_bid = amount;
             }
+        }
+
+        // Anti-snipe: a valid bid inside the final window pushes the deadline
+        // out. Auctions no longer than the window are exempt so their opening
+        // bid does not trigger an extension.
+        if auction.deadline.saturating_sub(auction.started_at) > ANTI_SNIPE_WINDOW_SECS
+            && should_extend_deadline(
+                env.ledger().timestamp(),
+                auction.deadline,
+                ANTI_SNIPE_WINDOW_SECS,
+            )
+        {
+            auction.deadline = extend_deadline(auction.deadline, ANTI_SNIPE_EXTENSION_SECS);
+            auction.extensions = auction.extensions.saturating_add(1);
         }
 
         env.storage().instance().set(&DataKey::Auction, &auction);
@@ -379,6 +451,238 @@ impl FractionalNftVaultContract {
             total_shares,
             false,
         );
+    }
+
+    // ── Commit-reveal (Vickrey) auction ──────────────────────────────────────
+
+    /// Start a blinded commit-reveal buyout auction.
+    ///
+    /// * `min_bid` — minimum acceptable revealed bid.
+    /// * `deposit` — anti-spam deposit escrowed with each commitment.
+    /// * `commit_duration` — seconds the commit phase lasts.
+    /// * `reveal_duration` — seconds the reveal phase lasts after commit closes.
+    pub fn start_commit_reveal_auction(
+        env: Env,
+        admin: Address,
+        min_bid: i128,
+        deposit: i128,
+        commit_duration: u64,
+        reveal_duration: u64,
+    ) {
+        ensure_initialized(&env);
+        ensure_not_finalized(&env);
+        admin.require_auth();
+        require_admin(&env, &admin);
+
+        if min_bid <= 0 || deposit <= 0 || commit_duration == 0 || reveal_duration == 0 {
+            panic_with_error!(&env, VaultError::InvalidAmount);
+        }
+        if !read_bool(&env, DataKey::NftLocked) {
+            panic_with_error!(&env, VaultError::NftNotLocked);
+        }
+        if env.storage().instance().has(&DataKey::CrAuction) {
+            panic_with_error!(&env, VaultError::AuctionActive);
+        }
+
+        let now = env.ledger().timestamp();
+        let commit_deadline = now.saturating_add(commit_duration);
+        let auction = CommitRevealAuction {
+            min_bid,
+            deposit,
+            commit_deadline,
+            reveal_deadline: commit_deadline.saturating_add(reveal_duration),
+            started_at: now,
+            extensions: 0,
+            highest_bidder: None,
+            highest_bid: 0,
+            second_highest_bid: 0,
+            revealed_count: 0,
+            forfeited_deposits: 0,
+            finalized: false,
+            commits: Map::new(&env),
+            reveals: Map::new(&env),
+            deposits: Map::new(&env),
+        };
+        env.storage().instance().set(&DataKey::CrAuction, &auction);
+        publish_auction(&env, &admin, min_bid, read_total_shares(&env), false);
+    }
+
+    /// Publish a blinded commitment and escrow the anti-spam deposit.
+    pub fn commit_bid(env: Env, bidder: Address, commitment: BytesN<32>, deposit: i128) {
+        ensure_initialized(&env);
+        ensure_not_finalized(&env);
+        bidder.require_auth();
+
+        let mut auction = read_cr_auction(&env);
+        let now = env.ledger().timestamp();
+
+        if now > auction.commit_deadline || auction.finalized {
+            panic_with_error!(&env, VaultError::AuctionActive);
+        }
+        if deposit != auction.deposit {
+            panic_with_error!(&env, VaultError::InvalidAmount);
+        }
+        if auction.commits.contains_key(bidder.clone()) {
+            panic_with_error!(&env, VaultError::AlreadyCommitted);
+        }
+
+        token::Client::new(&env, &read_payment_token(&env)).transfer(
+            &bidder,
+            env.current_contract_address(),
+            &deposit,
+        );
+        auction.deposits.set(bidder.clone(), deposit);
+        auction.commits.set(bidder.clone(), commitment);
+
+        // Anti-snipe: a commit inside the final window pushes both deadlines out.
+        if auction.commit_deadline.saturating_sub(auction.started_at) > ANTI_SNIPE_WINDOW_SECS
+            && should_extend_deadline(now, auction.commit_deadline, ANTI_SNIPE_WINDOW_SECS)
+        {
+            auction.commit_deadline =
+                extend_deadline(auction.commit_deadline, ANTI_SNIPE_EXTENSION_SECS);
+            auction.reveal_deadline =
+                extend_deadline(auction.reveal_deadline, ANTI_SNIPE_EXTENSION_SECS);
+            auction.extensions = auction.extensions.saturating_add(1);
+        }
+
+        env.storage().instance().set(&DataKey::CrAuction, &auction);
+    }
+
+    /// Reveal a committed bid. Verifies `sha256(amount || nonce)` against the
+    /// stored commitment, escrows `amount`, refunds the deposit and updates the
+    /// highest / second-highest trackers.
+    pub fn reveal_bid(env: Env, bidder: Address, amount: i128, nonce: BytesN<32>) {
+        ensure_initialized(&env);
+        ensure_not_finalized(&env);
+        bidder.require_auth();
+
+        let mut auction = read_cr_auction(&env);
+        let now = env.ledger().timestamp();
+
+        if now <= auction.commit_deadline || now > auction.reveal_deadline || auction.finalized {
+            panic_with_error!(&env, VaultError::AuctionActive);
+        }
+        let commitment = auction
+            .commits
+            .get(bidder.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::AuctionMissing));
+        let expected = bid_commitment(&env, &Bid { amount, nonce });
+        if expected != commitment {
+            panic_with_error!(&env, VaultError::InvalidCommitment);
+        }
+        if amount < auction.min_bid {
+            panic_with_error!(&env, VaultError::BidTooLow);
+        }
+        if auction.reveals.contains_key(bidder.clone()) {
+            panic_with_error!(&env, VaultError::AlreadyClaimed);
+        }
+
+        let payment = token::Client::new(&env, &read_payment_token(&env));
+        // Escrow the revealed bid and refund the anti-spam deposit.
+        payment.transfer(&bidder, env.current_contract_address(), &amount);
+        let deposit = auction.deposits.get(bidder.clone()).unwrap_or(0);
+        if deposit > 0 {
+            payment.transfer(&env.current_contract_address(), &bidder, &deposit);
+            auction.deposits.set(bidder.clone(), 0);
+        }
+
+        auction.reveals.set(bidder.clone(), amount);
+        auction.revealed_count = auction.revealed_count.saturating_add(1);
+
+        if amount > auction.highest_bid {
+            auction.second_highest_bid = auction.highest_bid;
+            auction.highest_bid = amount;
+            auction.highest_bidder = Some(bidder.clone());
+        } else if amount > auction.second_highest_bid {
+            auction.second_highest_bid = amount;
+        }
+
+        env.storage().instance().set(&DataKey::CrAuction, &auction);
+        publish_bid(&env, &bidder, amount, deposit);
+    }
+
+    /// Finalize a completed commit-reveal auction.
+    ///
+    /// The highest revealer wins but pays only the second-highest revealed
+    /// amount (Vickrey); the difference is refunded. Other valid revealers are
+    /// refunded in full, and deposits from commitments that were never revealed
+    /// are forfeited into the buyout treasury.
+    pub fn finalize_commit_reveal_auction(env: Env, caller: Address) {
+        ensure_initialized(&env);
+        ensure_not_finalized(&env);
+        caller.require_auth();
+
+        let mut auction = read_cr_auction(&env);
+        if env.ledger().timestamp() <= auction.reveal_deadline {
+            panic_with_error!(&env, VaultError::AuctionActive);
+        }
+        let winner = auction
+            .highest_bidder
+            .clone()
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::NoBids));
+        let price = if auction.second_highest_bid > 0 {
+            auction.second_highest_bid
+        } else {
+            auction.highest_bid
+        };
+
+        let payment = token::Client::new(&env, &read_payment_token(&env));
+        for (bidder, amount) in auction.reveals.iter() {
+            let refund = if bidder == winner {
+                auction.highest_bid.saturating_sub(price)
+            } else {
+                amount
+            };
+            if refund > 0 {
+                payment.transfer(&env.current_contract_address(), &bidder, &refund);
+            }
+        }
+
+        // Deposits still held belong to bidders who never revealed.
+        let mut forfeited: i128 = 0;
+        for (_, deposit) in auction.deposits.iter() {
+            forfeited = forfeited.saturating_add(deposit);
+        }
+        auction.forfeited_deposits = forfeited;
+        auction.finalized = true;
+
+        let treasury = price.saturating_add(forfeited);
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage().instance().set(&DataKey::Finalized, &true);
+        env.storage().instance().set(&DataKey::NftLocked, &false);
+        env.storage().instance().set(&DataKey::CrAuction, &auction);
+
+        let nft_contract = read_nft_contract(&env);
+        let token_id = read_token_id(&env);
+        NftClient::new(&env, &nft_contract).transfer(
+            &env.current_contract_address(),
+            &winner,
+            &token_id,
+        );
+
+        publish_auction(&env, &winner, treasury, read_total_shares(&env), true);
+    }
+
+    /// Cancel a live commit-reveal auction and refund every escrow. Admin only.
+    pub fn cancel_commit_reveal_auction(env: Env, admin: Address) {
+        ensure_initialized(&env);
+        ensure_not_finalized(&env);
+        admin.require_auth();
+        require_admin(&env, &admin);
+
+        let auction = read_cr_auction(&env);
+        let payment = token::Client::new(&env, &read_payment_token(&env));
+        for (bidder, amount) in auction.reveals.iter() {
+            if amount > 0 {
+                payment.transfer(&env.current_contract_address(), &bidder, &amount);
+            }
+        }
+        for (bidder, deposit) in auction.deposits.iter() {
+            if deposit > 0 {
+                payment.transfer(&env.current_contract_address(), &bidder, &deposit);
+            }
+        }
+        env.storage().instance().remove(&DataKey::CrAuction);
     }
 
     /// Claim your pro-rata share of the buyout treasury. Payouts are
@@ -468,6 +772,10 @@ impl FractionalNftVaultContract {
 
     pub fn auction(env: Env) -> Option<AuctionState> {
         env.storage().instance().get(&DataKey::Auction)
+    }
+
+    pub fn commit_reveal_auction(env: Env) -> Option<CommitRevealAuction> {
+        env.storage().instance().get(&DataKey::CrAuction)
     }
 
     pub fn treasury(env: Env) -> i128 {
@@ -590,6 +898,13 @@ fn read_treasury(env: &Env) -> i128 {
 
 fn read_bool(env: &Env, key: DataKey) -> bool {
     env.storage().instance().get(&key).unwrap_or(false)
+}
+
+fn read_cr_auction(env: &Env) -> CommitRevealAuction {
+    env.storage()
+        .instance()
+        .get(&DataKey::CrAuction)
+        .unwrap_or_else(|| panic_with_error!(env, VaultError::AuctionMissing))
 }
 
 fn share_balance_internal(env: &Env, owner: &Address) -> i128 {
@@ -970,6 +1285,159 @@ mod tests {
         assert_eq!(sac.balance(&v.bidder), 10_000_000);
         assert_eq!(v.client().auction(), None);
         assert!(!v.client().finalized());
+    }
+
+    // ---- Anti-snipe (open auction) ----
+
+    #[test]
+    fn anti_snipe_extends_deadline_on_late_bid() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client().start_auction(&v.admin, &1_000, &600);
+
+        // Bid inside the final 5 minutes (deadline = 600, now = 500).
+        v.env.ledger().with_mut(|li| li.timestamp = 500);
+        v.client().bid(&v.bidder, &5_000);
+
+        let auction = v.client().auction().unwrap();
+        assert_eq!(auction.deadline, 1_200);
+        assert_eq!(auction.extensions, 1);
+    }
+
+    #[test]
+    fn anti_snipe_does_not_extend_short_auction() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client().start_auction(&v.admin, &1_000, &100);
+        v.client().bid(&v.bidder, &5_000);
+
+        let auction = v.client().auction().unwrap();
+        assert_eq!(auction.deadline, 100);
+        assert_eq!(auction.extensions, 0);
+    }
+
+    // ---- Commit-reveal (Vickrey) auction ----
+
+    fn commitment(env: &Env, amount: i128) -> (BytesN<32>, BytesN<32>) {
+        let nonce: BytesN<32> = BytesN::from_array(env, &[9u8; 32]);
+        let bid = Bid {
+            amount,
+            nonce: nonce.clone(),
+        };
+        (bid_commitment(env, &bid), nonce)
+    }
+
+    #[test]
+    fn commit_reveal_vickrey_prices_second_highest_and_forfeits() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+
+        let bidder2 = Address::generate(&v.env);
+        let no_show = Address::generate(&v.env);
+        let sac = token::StellarAssetClient::new(&v.env, &v.payment_token);
+        sac.mint(&bidder2, &10_000_000);
+        sac.mint(&no_show, &10_000_000);
+
+        // Commit phase 600s, reveal phase 100s, deposit 100.
+        v.client()
+            .start_commit_reveal_auction(&v.admin, &1_000, &100, &600, &100);
+
+        let (c1, n1) = commitment(&v.env, 5_000);
+        let (c2, n2) = commitment(&v.env, 8_000);
+        let (c3, _n3) = commitment(&v.env, 9_000);
+
+        v.client().commit_bid(&v.bidder, &c1, &100);
+        v.client().commit_bid(&bidder2, &c2, &100);
+        v.client().commit_bid(&no_show, &c3, &100);
+
+        // Reveal phase begins after the commit deadline.
+        v.env.ledger().with_mut(|li| li.timestamp = 650);
+        v.client().reveal_bid(&v.bidder, &5_000, &n1);
+        v.client().reveal_bid(&bidder2, &8_000, &n2);
+
+        // Escrow held, deposits refunded on valid reveal.
+        assert_eq!(sac.balance(&v.bidder), 10_000_000 - 5_000);
+        assert_eq!(sac.balance(&bidder2), 10_000_000 - 8_000);
+
+        v.env.ledger().with_mut(|li| li.timestamp = 760);
+        v.client().finalize_commit_reveal_auction(&v.bidder);
+
+        // Highest revealer (bidder2) wins the NFT.
+        assert_eq!(nft_owner(&v), bidder2);
+        // Vickrey price is the second-highest bid (5_000) plus the forfeited
+        // deposit from the non-revealer (100).
+        assert_eq!(v.client().treasury(), 5_100);
+        // Winner is refunded highest - price = 8_000 - 5_000.
+        assert_eq!(sac.balance(&bidder2), 10_000_000 - 5_000);
+        // Runner-up is refunded in full.
+        assert_eq!(sac.balance(&v.bidder), 10_000_000);
+        assert!(v.client().finalized());
+    }
+
+    #[test]
+    fn commit_reveal_anti_snipe_extends_both_deadlines() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client()
+            .start_commit_reveal_auction(&v.admin, &1_000, &100, &600, &100);
+
+        // Commit inside the final 5 minutes of the commit phase.
+        v.env.ledger().with_mut(|li| li.timestamp = 450);
+        let (c1, _n1) = commitment(&v.env, 5_000);
+        v.client().commit_bid(&v.bidder, &c1, &100);
+
+        let auction = v.client().commit_reveal_auction().unwrap();
+        assert_eq!(auction.commit_deadline, 1_200);
+        assert_eq!(auction.reveal_deadline, 1_300);
+        assert_eq!(auction.extensions, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #15)")]
+    fn commit_reveal_rejects_wrong_reveal() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client()
+            .start_commit_reveal_auction(&v.admin, &1_000, &100, &10, &10);
+
+        let (c1, _n1) = commitment(&v.env, 5_000);
+        v.client().commit_bid(&v.bidder, &c1, &100);
+
+        v.env.ledger().with_mut(|li| li.timestamp = 11);
+        let wrong_nonce: BytesN<32> = BytesN::from_array(&v.env, &[7u8; 32]);
+        v.client().reveal_bid(&v.bidder, &5_000, &wrong_nonce);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn commit_reveal_rejects_double_commit() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client()
+            .start_commit_reveal_auction(&v.admin, &1_000, &100, &10, &10);
+
+        let (c1, _n1) = commitment(&v.env, 5_000);
+        v.client().commit_bid(&v.bidder, &c1, &100);
+        v.client().commit_bid(&v.bidder, &c1, &100);
+    }
+
+    #[test]
+    fn cancel_commit_reveal_refunds_all_escrow() {
+        let v = setup();
+        fractionalize(&v, 300, 200, 500);
+        v.client()
+            .start_commit_reveal_auction(&v.admin, &1_000, &100, &600, &100);
+
+        let (c1, n1) = commitment(&v.env, 5_000);
+        v.client().commit_bid(&v.bidder, &c1, &100);
+        v.env.ledger().with_mut(|li| li.timestamp = 650);
+        v.client().reveal_bid(&v.bidder, &5_000, &n1);
+
+        v.client().cancel_commit_reveal_auction(&v.admin);
+
+        let sac = token::StellarAssetClient::new(&v.env, &v.payment_token);
+        assert_eq!(sac.balance(&v.bidder), 10_000_000);
+        assert!(v.client().commit_reveal_auction().is_none());
     }
 }
 

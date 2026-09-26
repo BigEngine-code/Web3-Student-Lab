@@ -48,6 +48,47 @@ pub enum Phase {
     Finalised,
 }
 
+// ── Sealed-bid auction primitives ────────────────────────────────────────────
+//
+// These primitives are shared with the fractional NFT vault's commit-reveal
+// (Vickrey) auction so both contracts agree on the commitment scheme and the
+// anti-snipe deadline math.
+
+/// Anti-snipe window: a bid placed within this many seconds of the deadline
+/// triggers an extension (see [`should_extend_deadline`]).
+pub const ANTI_SNIPE_WINDOW_SECS: u64 = 5 * 60;
+
+/// Anti-snipe extension: how far a last-minute bid pushes the deadline out.
+pub const ANTI_SNIPE_EXTENSION_SECS: u64 = 10 * 60;
+
+/// A sealed bid: the secret `amount` plus the random `nonce` that blinds it.
+/// The published commitment is `sha256(amount_be || nonce)` (see
+/// [`bid_commitment`]).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bid {
+    pub amount: i128,
+    pub nonce: BytesN<32>,
+}
+
+/// Compute the 32-byte commitment for a sealed [`Bid`].
+pub fn bid_commitment(env: &Env, bid: &Bid) -> BytesN<32> {
+    let mut raw = [0u8; 48];
+    raw[..16].copy_from_slice(&bid.amount.to_be_bytes());
+    raw[16..].copy_from_slice(&bid.nonce.to_array());
+    env.crypto().sha256(&Bytes::from_slice(env, &raw)).into()
+}
+
+/// Returns true when `now` is inside the anti-snipe window before `deadline`.
+pub fn should_extend_deadline(now: u64, deadline: u64, window: u64) -> bool {
+    now < deadline && deadline.saturating_sub(now) <= window
+}
+
+/// Push `deadline` out by `extension` seconds without overflowing.
+pub fn extend_deadline(deadline: u64, extension: u64) -> u64 {
+    deadline.saturating_add(extension)
+}
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
