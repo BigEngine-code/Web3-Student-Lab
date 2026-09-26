@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol,
+    Env, Symbol, Vec,
 };
 
 // ── Storage keys ────────────────────────────────────────────────────────────
@@ -77,6 +77,11 @@ pub enum Error {
     RecordNotFound = 6,
     RefundWindowClosed = 7,
     ArithmeticOverflow = 8,
+    InvalidShares = 9,
+    EscrowNotFound = 10,
+    EscrowAlreadyDistributed = 11,
+    DuplicateStakeholder = 12,
+    EscrowAlreadyExists = 13,
 }
 
 // ── User balance mapping ─────────────────────────────────────────────────────
@@ -84,6 +89,38 @@ pub enum Error {
 pub enum DataKey {
     Balance(Address),
     Payment(u64),
+    Escrow(u64),
+}
+
+// ── Multi-stakeholder escrow types (#1416) ──────────────────────────────────
+
+/// One stakeholder's cut of an escrow, expressed in basis points of the
+/// escrow's total (1 bps = 0.01%). A valid `Escrow`'s shares always sum
+/// to exactly 10_000 bps.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowShare {
+    pub stakeholder: Address,
+    pub bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EscrowStatus {
+    Funded = 0,
+    Distributed = 1,
+    Cancelled = 2,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Escrow {
+    pub id: u64,
+    pub payer: Address,
+    pub total_amount: i128,
+    pub shares: Vec<EscrowShare>,
+    pub status: EscrowStatus,
+    pub created_at: u64,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -409,7 +446,248 @@ impl PaymentGateway {
     }
 }
 
+// ── Multi-Stakeholder Escrow (pull-over-push) ───────────────────────────────
+//
+// `distribute_escrow` intentionally never pushes anything to a
+// stakeholder. It only *credits* each stakeholder's own pull-withdrawal
+// balance (`DataKey::Balance`) — the same balance `withdraw` already
+// reads from — instead of transferring funds to them directly.
+//
+// This is the actual fix for the DoS class #1416 describes. On Soroban,
+// a panic anywhere during a contract invocation unwinds *every* storage
+// write made during that invocation, not just the operation that
+// panicked. A naive "distribute" that looped over stakeholders and
+// pushed funds out to each one directly — by requiring each
+// stakeholder's own `require_auth()`, or by invoking an external token
+// transfer that can fail for a specific recipient (no trustline, a
+// contract address that always panics, a sanctioned/frozen account) —
+// would be all-or-nothing per call: if stakeholder #2 of 5 can never
+// succeed, stakeholders #1, #3, #4 and #5 can *never* be paid either, no
+// matter how many times distribution is retried, because every retry
+// panics at the same stakeholder and unwinds the other four's transfers
+// right along with it. A single bad or unresponsive recipient
+// permanently freezes the whole escrow.
+//
+// Crediting a balance is a plain, unconditional storage write: it
+// doesn't call the stakeholder, doesn't require anything from them, and
+// can't fail based on *who* they are. So the loop below can't be
+// blocked by any individual stakeholder — the only ways it can panic
+// (arithmetic overflow, an already-distributed escrow) are conditions
+// that are the same for every stakeholder, not specific to one of them.
+// Once credited, each stakeholder withdraws independently via the
+// existing `withdraw` entrypoint, on their own schedule, in their own
+// transaction; one stakeholder never withdrawing has zero effect on any
+// other stakeholder's ability to do so.
+#[contractimpl]
+impl PaymentGateway {
+    /// Locks `amount` out of `payer`'s balance into a new multi-stakeholder
+    /// escrow. `shares` must be non-empty, contain no duplicate
+    /// stakeholder, have every entry's `bps > 0`, and sum to exactly
+    /// 10_000 basis points (100%).
+    pub fn create_escrow(
+        env: Env,
+        payer: Address,
+        escrow_id: u64,
+        shares: Vec<EscrowShare>,
+        amount: i128,
+    ) -> Escrow {
+        payer.require_auth();
+        Self::require_not_paused(&env);
+
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if env.storage().persistent().has(&DataKey::Escrow(escrow_id)) {
+            panic_with_error!(&env, Error::EscrowAlreadyExists);
+        }
+        Self::validate_shares(&env, &shares);
+
+        let mut payer_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(payer.clone()))
+            .unwrap_or(0);
+        if payer_balance < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+        payer_balance = payer_balance.checked_sub(amount).expect("payer underflow");
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(payer.clone()), &payer_balance);
+
+        let escrow = Escrow {
+            id: escrow_id,
+            payer: payer.clone(),
+            total_amount: amount,
+            shares,
+            status: EscrowStatus::Funded,
+            created_at: u64::from(env.ledger().sequence()),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events()
+            .publish((symbol_short!("esc_new"), payer), (escrow_id, amount));
+
+        escrow
+    }
+
+    /// Credits every stakeholder's pull-withdrawal balance with their
+    /// share of the escrow and marks it `Distributed`. Callable by the
+    /// escrow's payer or the contract admin; safe to call exactly once
+    /// per escrow. See the module-level doc comment above for why this
+    /// credits balances instead of pushing funds directly to stakeholders.
+    pub fn distribute_escrow(env: Env, caller: Address, escrow_id: u64) -> Escrow {
+        caller.require_auth();
+        Self::require_not_paused(&env);
+
+        let key = DataKey::Escrow(escrow_id);
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::EscrowNotFound));
+
+        Self::require_payer_or_admin(&env, &caller, &escrow.payer);
+
+        if escrow.status != EscrowStatus::Funded {
+            panic_with_error!(&env, Error::EscrowAlreadyDistributed);
+        }
+
+        let share_count = escrow.shares.len();
+        let mut distributed: i128 = 0;
+
+        for i in 0..share_count {
+            let share = escrow.shares.get(i).unwrap();
+
+            // Every stakeholder except the last gets their exact bps cut;
+            // the last absorbs the integer-division remainder so the sum
+            // of credited balances always equals `total_amount` exactly —
+            // no dust is created or lost.
+            let share_amount = if i == share_count - 1 {
+                escrow
+                    .total_amount
+                    .checked_sub(distributed)
+                    .expect("remainder underflow")
+            } else {
+                Self::calculate_fee(&env, escrow.total_amount, share.bps)
+            };
+
+            let mut balance: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Balance(share.stakeholder.clone()))
+                .unwrap_or(0);
+            balance = balance
+                .checked_add(share_amount)
+                .expect("stakeholder overflow");
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(share.stakeholder.clone()), &balance);
+
+            distributed = distributed
+                .checked_add(share_amount)
+                .expect("distributed overflow");
+        }
+
+        escrow.status = EscrowStatus::Distributed;
+        env.storage().persistent().set(&key, &escrow);
+
+        env.events()
+            .publish((symbol_short!("esc_dist"),), (escrow_id, distributed));
+
+        escrow
+    }
+
+    /// Returns an un-distributed escrow's locked funds to the payer's
+    /// withdrawable balance. Only valid while `status == Funded`.
+    pub fn cancel_escrow(env: Env, caller: Address, escrow_id: u64) -> Escrow {
+        caller.require_auth();
+        Self::require_not_paused(&env);
+
+        let key = DataKey::Escrow(escrow_id);
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::EscrowNotFound));
+
+        Self::require_payer_or_admin(&env, &caller, &escrow.payer);
+
+        if escrow.status != EscrowStatus::Funded {
+            panic_with_error!(&env, Error::EscrowAlreadyDistributed);
+        }
+
+        let mut payer_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(escrow.payer.clone()))
+            .unwrap_or(0);
+        payer_balance = payer_balance
+            .checked_add(escrow.total_amount)
+            .expect("payer overflow");
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(escrow.payer.clone()), &payer_balance);
+
+        escrow.status = EscrowStatus::Cancelled;
+        env.storage().persistent().set(&key, &escrow);
+
+        env.events().publish((symbol_short!("esc_cxl"),), escrow_id);
+
+        escrow
+    }
+
+    pub fn get_escrow(env: Env, escrow_id: u64) -> Escrow {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::EscrowNotFound))
+    }
+
+    fn require_payer_or_admin(env: &Env, caller: &Address, payer: &Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .unwrap_or_else(|| panic_with_error!(env, Error::Unauthorized));
+        if caller != payer && *caller != admin {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+    }
+
+    fn validate_shares(env: &Env, shares: &Vec<EscrowShare>) {
+        if shares.is_empty() {
+            panic_with_error!(env, Error::InvalidShares);
+        }
+
+        let len = shares.len();
+        let mut total_bps: u32 = 0;
+        for i in 0..len {
+            let share = shares.get(i).unwrap();
+            if share.bps == 0 {
+                panic_with_error!(env, Error::InvalidShares);
+            }
+            for j in (i + 1)..len {
+                let other = shares.get(j).unwrap();
+                if other.stakeholder == share.stakeholder {
+                    panic_with_error!(env, Error::DuplicateStakeholder);
+                }
+            }
+            total_bps = total_bps.checked_add(share.bps).expect("bps overflow");
+        }
+
+        if total_bps != 10_000 {
+            panic_with_error!(env, Error::InvalidShares);
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod test;
 
 #[cfg(test)]
 mod tests {
