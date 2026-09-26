@@ -98,11 +98,7 @@ jobs:
           GITHUB_CLIENT_SECRET: test-github-client-secret
           GITHUB_REDIRECT_URI: http://localhost:8080/api/v1/oauth/github/callback
           FRONTEND_URL: http://localhost:3000
-        # Pre-existing test failures unrelated to migrations (12 failing
-        # suites as of this PR) — out of scope here; `|| true` intentionally
-        # left in place rather than silently making this bypass narrower
-        # without fixing what it's bypassing.
-        run: npm run test:coverage || true
+        run: npm run test:coverage
       - name: Dependency audit (backend)
         working-directory: ./backend
         continue-on-error: true
@@ -188,6 +184,24 @@ jobs:
         working-directory: ./contracts
         run: cargo test --lib
 
+  indexer:
+    name: Indexer Clippy & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
 
 # .github/workflows/ci.yml
 name: Backend CI - Schema & Migration Integrity
