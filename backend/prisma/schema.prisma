@@ -26,6 +26,8 @@ model Student {
   githubAccessToken String?
   // Additive nullable column (zero-downtime expand phase, #1426 / BE-HARD-35)
   profileTag        String?
+  discordId         String?  @unique
+  discordUsername   String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -43,6 +45,7 @@ model Student {
   @@index([email])
   @@index([createdAt])
   @@index([githubId])
+  @@index([discordId])
   @@map("students")
 }
 

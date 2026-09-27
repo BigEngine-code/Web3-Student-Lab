@@ -118,11 +118,25 @@ export const buildAuthorizationUrl = (state: string): string => {
   return `${GITHUB_AUTHORIZE_URL}?${params.toString()}`;
 };
 
+export const buildPkceAuthorizationUrl = (state: string, challenge: string): string => {
+  const config = getGitHubConfig();
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    redirect_uri: config.redirectUri,
+    scope: 'read:user user:email',
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  return `${GITHUB_AUTHORIZE_URL}?${params.toString()}`;
+};
+
 /**
  * Exchange an authorization code for an access token from GitHub
  */
 export const exchangeCodeForToken = async (
-  code: string
+  code: string,
+  codeVerifier?: string
 ): Promise<GitHubAccessTokenResponse> => {
   return githubApiBreaker.execute(async () => {
     const response = await fetch(GITHUB_TOKEN_URL, {
@@ -136,6 +150,7 @@ export const exchangeCodeForToken = async (
         client_secret: GITHUB_CLIENT_SECRET,
         code,
         redirect_uri: GITHUB_REDIRECT_URI,
+        ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
       }),
     });
 
@@ -298,16 +313,18 @@ export const findOrCreateStudentByGitHub = async (
  */
 export const handleGitHubCallback = async (
   code: string,
-  state: string
+  state: string,
+  codeVerifier?: string
 ): Promise<GitHubAuthResponse> => {
-  // Validate state for CSRF protection
-  const isValidState = await validateOAuthState(state);
-  if (!isValidState) {
-    throw new Error('Invalid or expired OAuth state. Please try logging in again.');
+  if (!codeVerifier) {
+    const isValidState = await validateOAuthState(state);
+    if (!isValidState) {
+      throw new Error('Invalid or expired OAuth state. Please try logging in again.');
+    }
   }
 
   // Exchange authorization code for access token
-  const tokenResponse = await exchangeCodeForToken(code);
+  const tokenResponse = await exchangeCodeForToken(code, codeVerifier);
 
   // Fetch GitHub user profile
   const githubUser = await fetchGitHubUser(tokenResponse.access_token);
@@ -342,12 +359,15 @@ export const handleGitHubCallback = async (
 /**
  * Link a GitHub account to an existing authenticated student
  */
-export const linkGitHubAccount = async (
+export const linkGitHubIdentity = async (
   studentId: string,
-  code: string
-): Promise<GitHubAuthResponse> => {
-  // Exchange code for token (no state validation needed for linking)
-  const tokenResponse = await exchangeCodeForToken(code);
+  code: string,
+  codeVerifier: string
+): Promise<void> => {
+  if (!codeVerifier) {
+    throw new Error('PKCE verifier is required to link GitHub');
+  }
+  const tokenResponse = await exchangeCodeForToken(code, codeVerifier);
 
   // Fetch GitHub user profile
   const githubUser = await fetchGitHubUser(tokenResponse.access_token);
@@ -362,7 +382,7 @@ export const linkGitHubAccount = async (
   }
 
   // Link GitHub to the student
-  const student = await prisma.student.update({
+  await prisma.student.update({
     where: { id: studentId },
     data: {
       githubId: githubUser.id,
@@ -372,6 +392,16 @@ export const linkGitHubAccount = async (
       updatedAt: new Date(),
     },
   });
+};
+
+export const linkGitHubAccount = async (
+  studentId: string,
+  code: string,
+  codeVerifier?: string
+): Promise<GitHubAuthResponse> => {
+  if (!codeVerifier) throw new Error('PKCE verifier is required to link GitHub');
+  await linkGitHubIdentity(studentId, code, codeVerifier);
+  const student = await prisma.student.findUniqueOrThrow({ where: { id: studentId } });
 
   const payload: TokenPayload = { userId: student.id };
   const accessToken = generateAccessToken(payload);

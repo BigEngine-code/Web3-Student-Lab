@@ -66,7 +66,7 @@ router.get('/', async (_req: Request, res: Response): Promise<void> => {
         certificates: true,
       },
     });
-    res.json(students);
+    res.json(students.map(({ password, githubAccessToken, ...student }) => student));
   } catch (error) {
     logger.error('Failed to fetch students', { error });
     res.status(500).json({ error: 'Failed to fetch students' });
@@ -102,7 +102,8 @@ router.get(
         return;
       }
 
-      res.json(student);
+      const { password, githubAccessToken, ...publicStudent } = student;
+      res.json(publicStudent);
     } catch (error) {
       logger.error('Failed to fetch student', {
         error,
