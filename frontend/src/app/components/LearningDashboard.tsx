@@ -5,6 +5,7 @@ import Link from "next/link";
 import { allLessons, courses, storageKeys } from "../curriculum-data";
 import { CompletionModal, launchCompletionConfetti } from "./CompletionCelebration";
 import { ProgressRing } from "./ProgressRing";
+import { SocialIdentityPanel } from "@/components/social/SocialIdentityPanel";
 
 const readList = (key: string) => {
   if (typeof window === "undefined") return [] as string[];
@@ -80,6 +81,8 @@ export function LearningDashboard() {
           </div>
           <p className="mt-3 text-sm font-bold tracking-widest uppercase text-white">{percent}% complete</p>
         </header>
+
+        <SocialIdentityPanel />
 
         <section className="grid gap-5 md:grid-cols-3">
           {courses.map((item) => {

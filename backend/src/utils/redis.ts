@@ -17,6 +17,11 @@ const createTestRedisClient = () => {
     on: () => undefined,
     off: () => undefined,
     get: async (key: string) => memoryStore.get(key) ?? null,
+    getdel: async (key: string) => {
+      const value = memoryStore.get(key) ?? null;
+      memoryStore.delete(key);
+      return value;
+    },
     set: async (key: string, value: string, ...args: any[]) => {
       const isNx = args.some((arg) => typeof arg === 'string' && arg.toUpperCase() === 'NX');
       if (isNx && memoryStore.has(key)) {

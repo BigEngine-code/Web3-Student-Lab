@@ -16,6 +16,7 @@ export interface User {
 export interface AuthResponse {
   user: User;
   token: string;
+  accessToken?: string;
 }
 
 export interface LoginRequest {
@@ -121,6 +122,11 @@ function normalizeCertificateListResponse(data: unknown): Certificate[] {
 
 // Authentication APIs
 export const authAPI = {
+  completeOAuthTicket: async (ticket: string): Promise<AuthResponse & { isNewUser: boolean }> => {
+    const response = await apiClient.post('/oauth/session', { ticket });
+    return response.data;
+  },
+
   register: async (data: RegisterRequest): Promise<AuthResponse> => {
     apiRequestCache.invalidatePrefix('auth:profile-status');
     const response = await apiClient.post('/auth/register', data);
@@ -196,6 +202,26 @@ export const authAPI = {
   linkGitHubAccount: async (code: string): Promise<AuthResponse> => {
     const response = await apiClient.post('/oauth/github/link', { code });
     return response.data;
+  },
+};
+
+export const socialIdentityAPI = {
+  getStatus: async (): Promise<{
+    github: { linked: boolean; username?: string };
+    discord: { linked: boolean; username?: string };
+  }> => {
+    const response = await apiClient.get('/oauth/social/status');
+    return response.data;
+  },
+
+  startGitHubLink: async (): Promise<string> => {
+    const response = await apiClient.post('/oauth/github/link/start');
+    return response.data.authorizationUrl;
+  },
+
+  startDiscordLink: async (): Promise<string> => {
+    const response = await apiClient.post('/oauth/discord/link/start');
+    return response.data.authorizationUrl;
   },
 };
 

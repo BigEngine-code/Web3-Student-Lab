@@ -24,6 +24,8 @@ model Student {
   githubUsername    String?
   githubAvatarUrl   String?
   githubAccessToken String?
+  discordId         String?  @unique
+  discordUsername   String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -41,6 +43,7 @@ model Student {
   @@index([email])
   @@index([createdAt])
   @@index([githubId])
+  @@index([discordId])
   @@map("students")
 }
 

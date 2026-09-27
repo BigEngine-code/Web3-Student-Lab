@@ -44,6 +44,8 @@ pub struct DIDDocument {
     pub owner: Address,
     /// Off-chain GitHub handle bound to this DID.
     pub github_handle: Option<String>,
+    /// Social handles keyed by provider symbol (github or discord).
+    pub social_identities: Map<Symbol, String>,
     /// Ed25519 verification key (32 bytes) used to sign contributor proofs.
     pub verification_key: Option<BytesN<32>>,
     pub attributes: Map<Symbol, Bytes>,
@@ -76,6 +78,7 @@ impl DIDRegistryContract {
         let doc = DIDDocument {
             owner: owner.clone(),
             github_handle: None,
+            social_identities: Map::new(&env),
             verification_key: None,
             attributes,
             controllers: Vec::new(&env),
@@ -102,7 +105,36 @@ impl DIDRegistryContract {
         assert!(!doc.revoked, "DID revoked");
         assert!(doc.owner == sender, "Only owner can bind github handle");
         doc.github_handle = Some(handle);
+        doc.social_identities
+            .set(Symbol::new(&env, "github"), doc.github_handle.clone().unwrap());
         dids.set(did.clone(), doc);
+        env.storage().persistent().set(&DataKey::DIDs, &dids);
+    }
+
+    /// Bind a social handle to the DID. Only the owner may bind; verifiers must
+    /// separately validate the provider proof associated with the handle.
+    pub fn bind_social(
+        env: Env,
+        sender: Address,
+        did: BytesN<32>,
+        provider: Symbol,
+        handle: String,
+    ) {
+        sender.require_auth();
+        assert!(
+            provider == Symbol::new(&env, "github") || provider == Symbol::new(&env, "discord"),
+            "Unsupported social provider"
+        );
+        let mut dids: Map<BytesN<32>, DIDDocument> =
+            env.storage().persistent().get(&DataKey::DIDs).unwrap();
+        let mut doc = dids.get(did.clone()).unwrap();
+        assert!(!doc.revoked, "DID revoked");
+        assert!(doc.owner == sender, "Only owner can bind social identity");
+        if provider == Symbol::new(&env, "github") {
+            doc.github_handle = Some(handle.clone());
+        }
+        doc.social_identities.set(provider, handle);
+        dids.set(did, doc);
         env.storage().persistent().set(&DataKey::DIDs, &dids);
     }
 
@@ -244,6 +276,16 @@ impl DIDRegistryContract {
         dids.get(did).and_then(|d| d.github_handle)
     }
 
+    /// Returns a verified social handle for a DID and provider, if any.
+    pub fn get_social_handle(env: Env, did: BytesN<32>, provider: Symbol) -> Option<String> {
+        let dids: Map<BytesN<32>, DIDDocument> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DIDs)
+            .unwrap_or_else(|| Map::new(&env));
+        dids.get(did).and_then(|doc| doc.social_identities.get(provider))
+    }
+
     /// Returns the Ed25519 verification key for a DID, if set.
     pub fn get_verification_key(env: Env, did: BytesN<32>) -> Option<BytesN<32>> {
         let dids: Map<BytesN<32>, DIDDocument> = env
@@ -288,11 +330,22 @@ mod test {
         // Bind github + verification key
         let handle = String::from_str(&env, "alice");
         client.bind_github(&owner, &did, &handle);
+        let discord_handle = String::from_str(&env, "alice#1234");
+        client.bind_social(
+            &owner,
+            &did,
+            &Symbol::new(&env, "discord"),
+            &discord_handle,
+        );
         let key = BytesN::from_array(&env, &[9u8; 32]);
         client.set_verification_key(&owner, &did, &key);
 
         let doc = client.resolve(&did).unwrap();
         assert_eq!(doc.github_handle, Some(handle));
+        assert_eq!(
+            client.get_social_handle(&did, &Symbol::new(&env, "discord")),
+            Some(discord_handle)
+        );
         assert_eq!(doc.verification_key, Some(key));
 
         // Add a contributor proof
