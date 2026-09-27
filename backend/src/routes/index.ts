@@ -48,6 +48,7 @@ import adminCoursesRouter from './admin/courses.routes.js';
 import apiRouter from './api.js';
 import policyRouter from './policy/policy.routes.js';
 import storageRouter from './storage.routes.js';
+import canvasRouter from './canvas.routes.js';
 // backend/src/routes/index.ts
 import { Router, Request, Response, NextFunction } from 'express';
 import apiRouter from './api';
@@ -77,6 +78,7 @@ router.use('/courses', validateWorkspaceMembership, coursesRouter);
 router.use('/enrollments', validateWorkspaceMembership, enrollmentsRouter);
 router.use('/feedback', validateWorkspaceMembership, feedbackRouter);
 router.use('/learning', validateWorkspaceMembership, learningRoutes);
+router.use('/canvas', validateWorkspaceMembership, canvasRouter);
 
 router.use('/dashboard', dashboardRoutes);
 router.use('/dashboard/activity-log', activityLogRouter);
