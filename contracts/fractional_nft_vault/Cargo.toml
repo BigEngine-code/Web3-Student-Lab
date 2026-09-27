@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 soroban-sdk = "27.0.6"
 contract-events = { path = "../contract_events" }
+commit-reveal-rng = { path = "../commit_reveal_rng" }
 
 [dev-dependencies]
 soroban-sdk = { version = "27.0.6", features = ["testutils"] }
