@@ -3,6 +3,22 @@ import logger from '../utils/logger.js';
 import { cbManager } from '../lib/circuit-breaker/CircuitBreakerManager.js';
 import { Injectable, Logger, InternalServerErrorAppException } from '@nestjs/common';
 import { Server, TransactionBuilder, Networks, rpc } from '@stellar/stellar-sdk';
+import type { HorizonLedgerIngestionEngine } from '../jobs/horizonLedgerIngestionEngine.js';
+
+/**
+ * Status of the Horizon ledger ingestion pipeline (#1418) — surfaced here
+ * so anything already asking this service "what's the state of our
+ * Stellar integration?" (mode, contract address) can also learn how far
+ * behind the ingested transaction history is, without needing to know
+ * `HorizonLedgerIngestionEngine` exists.
+ */
+export interface IngestionStatus {
+  chain: string;
+  lastIngestedSequence: number | null;
+  /** False when the ingestion pipeline has never successfully queried the database. */
+  available: boolean;
+  error?: string;
+}
 
 export type BlockchainMode = 'simulation' | 'live';
 
@@ -212,6 +228,43 @@ export class CertificateBlockchainService {
    */
   getContractAddress(): string {
     return this.contractId;
+  }
+
+  /**
+   * Reports how far the Horizon ledger ingestion pipeline (#1418) has
+   * progressed — the last ledger sequence it has durably recorded for
+   * `chain`. Lazily imports the ingestion engine and shared Prisma client
+   * so a caller that never touches this method (e.g. most existing
+   * simulation-mode code paths and tests) never pays for a database
+   * connection it doesn't need.
+   *
+   * Never throws: any failure to reach the database is reported as
+   * `available: false` with the underlying error message, mirroring how
+   * `isConnected()` reports blockchain health rather than throwing.
+   */
+  async getIngestionStatus(
+    chain = 'STELLAR',
+    engineOverride?: HorizonLedgerIngestionEngine
+  ): Promise<IngestionStatus> {
+    try {
+      let engine = engineOverride;
+      if (!engine) {
+        const [{ HorizonLedgerIngestionEngine: EngineCtor }, { default: prisma }] = await Promise.all([
+          import('../jobs/horizonLedgerIngestionEngine.js'),
+          import('../db/index.js'),
+        ]);
+        engine = new EngineCtor(prisma, { chain });
+      }
+
+      const last = await engine.getLastIngestedLedger();
+      return { chain, lastIngestedSequence: last?.sequence ?? null, available: true };
+    } catch (err) {
+      logger.warn('[CertificateBlockchainService] getIngestionStatus failed', {
+        chain,
+        error: (err as Error).message,
+      });
+      return { chain, lastIngestedSequence: null, available: false, error: (err as Error).message };
+    }
   }
 
   // =====================

@@ -129,4 +129,41 @@ describe('CertificateBlockchainService', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('getIngestionStatus (#1418)', () => {
+    it('reports the last ingested ledger sequence via an injected engine', async () => {
+      const service = new CertificateBlockchainService();
+      const engineStub = {
+        getLastIngestedLedger: async () => ({ sequence: 12345, hash: 'h12345' }),
+      };
+
+      const status = await service.getIngestionStatus('STELLAR', engineStub as any);
+
+      expect(status).toEqual({ chain: 'STELLAR', lastIngestedSequence: 12345, available: true });
+    });
+
+    it('reports lastIngestedSequence: null when nothing has been ingested yet', async () => {
+      const service = new CertificateBlockchainService();
+      const engineStub = { getLastIngestedLedger: async () => null };
+
+      const status = await service.getIngestionStatus('STELLAR', engineStub as any);
+
+      expect(status).toEqual({ chain: 'STELLAR', lastIngestedSequence: null, available: true });
+    });
+
+    it('degrades to available: false with an error message instead of throwing when the engine fails', async () => {
+      const service = new CertificateBlockchainService();
+      const engineStub = {
+        getLastIngestedLedger: async () => {
+          throw new Error('connection refused');
+        },
+      };
+
+      const status = await service.getIngestionStatus('STELLAR', engineStub as any);
+
+      expect(status.available).toBe(false);
+      expect(status.lastIngestedSequence).toBeNull();
+      expect(status.error).toMatch(/connection refused/);
+    });
+  });
 });
