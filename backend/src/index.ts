@@ -8,6 +8,7 @@ import { dbRoutingMiddleware } from './middleware/dbRouting.js';
 import apiRouter from './routes/api.js';
 import { livenessHandler, readinessHandler } from './routes/health.routes.js';
 import routes from './routes/index.js';
+import { runStartupMigrations } from './db/startupMigrations.js';
 import logger from './utils/logger.js';
 import { getSentryErrorHandler, getSentryRequestHandler, initializeSentry } from './utils/sentry.js';
 // backend/src/index.ts (Gateway Integration excerpt)
@@ -76,7 +77,14 @@ app.use('/api', apiRouter);
 app.use(getSentryErrorHandler());
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-  });
+  runStartupMigrations()
+    .then(() => {
+      app.listen(port, () => {
+        console.log(`Server is running on port ${port}`);
+      });
+    })
+    .catch((error) => {
+      logger.error('refusing to serve traffic until migrations succeed', error);
+      process.exit(1);
+    });
 }

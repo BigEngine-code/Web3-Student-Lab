@@ -534,16 +534,6 @@ model ContributorProof {
   @@map("contributor_proofs")
 }
 
-// backend/prisma/schema.prisma
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique @map("wallet_address")

@@ -103,6 +103,7 @@ pub struct ListEventsQuery {
     pub event_type: Option<String>,
     #[serde(default)]
     pub from_ledger: Option<u32>,
+    pub to_ledger: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
 }
@@ -113,8 +114,9 @@ async fn list_events(
 ) -> Response {
     let limit = q.limit.unwrap_or(50).min(500) as i64;
     let from_ledger = q.from_ledger.map(|n| n as i64).unwrap_or(0);
+    let to_ledger = q.to_ledger.map(|n| n as i64);
 
-    let rows = match query_events(&state.pool, &q, limit, from_ledger).await {
+    let rows = match query_events(&state.pool, &q, limit, from_ledger, to_ledger).await {
         Ok(r) => r,
         Err(err) => {
             warn!(error = %err, "list_events failed");
@@ -126,10 +128,7 @@ async fn list_events(
         }
     };
 
-    match axum::Json(&rows).into_response() {
-        // direct path; never fails for valid JSON
-        ok => ok,
-    }
+    axum::Json(&rows).into_response()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -150,6 +149,7 @@ async fn query_events(
     q: &ListEventsQuery,
     limit: i64,
     from_ledger: i64,
+    to_ledger: Option<i64>,
 ) -> anyhow::Result<Vec<EventRow>> {
     match pool {
         crate::db::IndexerPool::Sqlite(p) => {
@@ -157,18 +157,21 @@ async fn query_events(
                 "SELECT id, ledger, ledger_closed_at, contract_id, event_type, topics, data, tx_hash, ingested_at \
                  FROM events WHERE ledger >= ?",
             );
-            let mut idx = 1;
+            if to_ledger.is_some() {
+                sql.push_str(" AND ledger <= ?");
+            }
             if q.contract_id.is_some() {
-                sql.push_str(&format!(" AND contract_id = ?"));
-                idx += 1;
+                sql.push_str(" AND contract_id = ?");
             }
             if q.event_type.is_some() {
-                sql.push_str(&format!(" AND event_type = ?"));
-                idx += 1;
+                sql.push_str(" AND event_type = ?");
             }
             sql.push_str(" ORDER BY ledger DESC LIMIT ?");
 
             let mut query = sqlx::query_as::<_, EventRow>(&sql).bind(from_ledger);
+            if let Some(end) = to_ledger {
+                query = query.bind(end);
+            }
             if let Some(c) = &q.contract_id {
                 query = query.bind(c);
             }
@@ -189,6 +192,9 @@ async fn query_events(
                  FROM events WHERE ledger >= ",
             );
             qb.push_bind(from_ledger);
+            if let Some(end) = to_ledger {
+                qb.push(" AND ledger <= ").push_bind(end);
+            }
             if let Some(c) = &q.contract_id {
                 qb.push(" AND contract_id = ").push_bind(c.clone());
             }

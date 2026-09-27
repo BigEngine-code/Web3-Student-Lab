@@ -22,6 +22,7 @@
 
 mod config;
 mod db;
+mod reorg;
 mod rpc;
 mod server;
 
@@ -127,8 +128,6 @@ async fn pool_cursor(pool: &IndexerPool) -> Result<()> {
                     .context("postgres cursor read")?;
         }
     }
-    // Touch the imported trait so future schemas can be probed without churn.
-    let _ = sqlx::Row::columns;
     Ok(())
 }
 

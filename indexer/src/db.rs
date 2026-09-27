@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{PgPool, Pool, SqlitePool};
+use sqlx::{PgPool, SqlitePool};
 use tracing::info;
 
 use crate::config::{Config, DbKind};
@@ -19,6 +19,7 @@ pub enum IndexerPool {
 }
 
 impl IndexerPool {
+    #[allow(dead_code)]
     pub fn kind(&self) -> DbKind {
         match self {
             IndexerPool::Sqlite(_) => DbKind::Sqlite,
@@ -40,7 +41,9 @@ pub type SharedState = Arc<AppState>;
 pub async fn connect(cfg: &Config) -> Result<IndexerPool> {
     match cfg.db_kind() {
         DbKind::Sqlite => {
-            let opts = SqliteConnectOptions::from_url(&cfg.database_url.parse()?)
+            let opts = cfg
+                .database_url
+                .parse::<SqliteConnectOptions>()
                 .context("parsing SQLite url")?
                 .create_if_missing(true)
                 .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
@@ -70,19 +73,38 @@ pub async fn connect(cfg: &Config) -> Result<IndexerPool> {
 /// Apply schema migrations on startup. We use dialect-specific SQL because the
 /// shared feature set of SQLite + Postgres is too narrow to express
 /// auto-incrementing primary keys cleanly.
+fn sql_statements(script: &str) -> Vec<String> {
+    script
+        .split(';')
+        .map(|statement| {
+            statement
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .map(|statement| statement.trim().to_string())
+        .filter(|statement| !statement.is_empty())
+        .collect()
+}
+
 pub async fn init_schema(pool: &IndexerPool) -> Result<()> {
     match pool {
         IndexerPool::Sqlite(p) => {
-            sqlx::query(SQLITE_SCHEMA)
-                .execute(p)
-                .await
-                .context("creating SQLite schema")?;
+            for statement in sql_statements(SQLITE_SCHEMA) {
+                sqlx::query(&statement)
+                    .execute(p)
+                    .await
+                    .with_context(|| format!("creating SQLite schema: {statement}"))?;
+            }
         }
         IndexerPool::Postgres(p) => {
-            sqlx::query(POSTGRES_SCHEMA)
-                .execute(p)
-                .await
-                .context("creating Postgres schema")?;
+            for statement in sql_statements(POSTGRES_SCHEMA) {
+                sqlx::query(&statement)
+                    .execute(p)
+                    .await
+                    .with_context(|| format!("creating Postgres schema: {statement}"))?;
+            }
         }
     }
     info!("database schema ready");
@@ -146,7 +168,7 @@ pub async fn insert_events(pool: &IndexerPool, events: &[crate::rpc::IndexedEven
     }
     match pool {
         IndexerPool::Sqlite(p) => {
-            let mut qb = sqlx::query::QueryBuilder::<sqlx::Sqlite>::new(
+            let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                 "INSERT OR IGNORE INTO events \
                  (id, ledger, ledger_closed_at, contract_id, event_type, topics, data, tx_hash) ",
             );
@@ -166,7 +188,7 @@ pub async fn insert_events(pool: &IndexerPool, events: &[crate::rpc::IndexedEven
                 .context("inserting events (sqlite)")?;
         }
         IndexerPool::Postgres(p) => {
-            let mut qb = sqlx::query::QueryBuilder::<sqlx::Postgres>::new(
+            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
                 "INSERT INTO events \
                  (id, ledger, ledger_closed_at, contract_id, event_type, topics, data, tx_hash) ",
             );
@@ -191,7 +213,7 @@ pub async fn insert_events(pool: &IndexerPool, events: &[crate::rpc::IndexedEven
 }
 
 /// SQLite schema. `id` is the deterministic composite id from Soroban RPC.
-const SQLITE_SCHEMA: &str = include_str!("migrations/0001_init.sqlite.sql");
+const SQLITE_SCHEMA: &str = include_str!("../migrations/0001_init.sqlite.sql");
 
 /// Postgres schema. Adds a synthetic BIGSERIAL PK for index efficiency.
-const POSTGRES_SCHEMA: &str = include_str!("migrations/0001_init.postgres.sql");
+const POSTGRES_SCHEMA: &str = include_str!("../migrations/0001_init.postgres.sql");

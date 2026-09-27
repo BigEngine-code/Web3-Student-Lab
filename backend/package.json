@@ -21,7 +21,8 @@
     "collaboration": "tsx src/collaborationServer.ts",
     "collab:graphql": "tsx src/graphqlWsServer.ts",
     "load:ws": "node scripts/ws-load-test.js",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "migrate:locked": "tsx scripts/migrate-with-lock.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -30,3 +30,10 @@ CREATE TABLE IF NOT EXISTS indexer_cursor (
 );
 
 INSERT OR IGNORE INTO indexer_cursor (id, last_ledger) VALUES (1, 0);
+
+-- Hash of each ingested ledger. A mismatch against a later RPC response is a
+-- fork: events at that sequence and after it are rolled back and re-indexed.
+CREATE TABLE IF NOT EXISTS ledger_seals (
+    ledger  INTEGER PRIMARY KEY,
+    hash    TEXT NOT NULL
+);

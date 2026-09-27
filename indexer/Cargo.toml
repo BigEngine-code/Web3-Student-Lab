@@ -42,9 +42,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Misc
 anyhow = "1.0"
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-strip = true
-opt-level = 3

@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::db::{
     get_last_ledger, insert_events, update_last_ledger, IndexerPool,
 };
+use crate::reorg::{reconcile_fork, upsert_seals, LedgerSeal};
 
 /// A row persisted in the events table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,33 @@ impl RpcClient {
         Ok(resp.result.events)
     }
 
+    /// Ledger hashes for `[start, end]`. Used to detect forks before commit.
+    pub async fn get_ledger_seals(&self, start: u32, end: u32) -> Result<Vec<LedgerSeal>> {
+        if end < start {
+            return Ok(Vec::new());
+        }
+        let resp: RpcResponse<GetLedgersResult> = self
+            .post(
+                "getLedgers",
+                serde_json::json!({
+                    "startLedger": start,
+                    "pagination": { "limit": end.saturating_sub(start).saturating_add(1).min(200) },
+                }),
+            )
+            .await
+            .context("getLedgers")?;
+        Ok(resp
+            .result
+            .ledgers
+            .into_iter()
+            .filter(|ledger| ledger.sequence >= start && ledger.sequence <= end)
+            .map(|ledger| LedgerSeal {
+                sequence: ledger.sequence,
+                hash: ledger.hash,
+            })
+            .collect())
+    }
+
     async fn post<P: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -115,6 +143,7 @@ impl RpcClient {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RpcResponse<T> {
     jsonrpc: String,
     id: String,
@@ -127,6 +156,17 @@ struct LedgerSeqResult {
     sequence: u32,
     #[serde(rename = "latestLedgerCloseTime")]
     latest_ledger_close_time: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetLedgersResult {
+    ledgers: Vec<LedgerHeader>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LedgerHeader {
+    sequence: u32,
+    hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +242,11 @@ impl Poller {
                     debug!(next_ledger = next, "no new ledgers");
                     sleep(self.cfg.poll_interval).await;
                 }
+                Ok(PollStep::Reorganized { fork_ledger }) => {
+                    warn!(fork_ledger, "ledger fork detected; rolled back invalidated events");
+                    backoff = Duration::from_secs(2);
+                    sleep(Duration::from_millis(200)).await;
+                }
                 Ok(PollStep::Replayed { advanced }) => {
                     info!(
                         advanced,
@@ -246,6 +291,27 @@ impl Poller {
             .last_ledger
             .saturating_add(self.cfg.batch_size)
             .min(latest);
+
+        let window_start = cursor.last_ledger.saturating_sub(3).max(1);
+        match client.get_ledger_seals(window_start, end).await {
+            Ok(seals) => {
+                if let Some(fork_ledger) = reconcile_fork(&self.pool, &seals)
+                    .await
+                    .context("reconciling ledger fork")?
+                {
+                    return Ok(PollStep::Reorganized { fork_ledger });
+                }
+                if !seals.is_empty() {
+                    upsert_seals(&self.pool, &seals)
+                        .await
+                        .context("persisting ledger seals")?;
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "ledger hash probe failed; continuing without fork check");
+            }
+        }
+
         let raw_events = client
             .get_events(cursor.last_ledger + 1, Some(end), self.cfg.batch_size)
             .await
@@ -290,6 +356,7 @@ enum PollStep {
     Advanced { processed: usize, next: u32 },
     Idle { next: u32 },
     Replayed { advanced: usize },
+    Reorganized { fork_ledger: u32 },
 }
 
 struct Cursor {

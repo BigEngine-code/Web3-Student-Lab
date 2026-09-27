@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS events (
     topics             TEXT NOT NULL,
     data               TEXT NOT NULL,
     tx_hash            TEXT NOT NULL,
-    ingested_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ingested_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ledger     ON events (ledger);
@@ -30,3 +30,8 @@ CREATE TABLE IF NOT EXISTS indexer_cursor (
 
 INSERT INTO indexer_cursor (id, last_ledger) VALUES (1, 0)
 ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS ledger_seals (
+    ledger  BIGINT PRIMARY KEY,
+    hash    TEXT NOT NULL
+);

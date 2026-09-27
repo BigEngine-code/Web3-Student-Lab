@@ -29,6 +29,7 @@ RUN mkdir -p src \
 
 # Real build. The dep cache above means this layer is fast even when the
 # source changes.
+COPY migrations ./migrations
 COPY src ./src
 # Touch the source file to force cargo to recompile the crate, not the cache.
 RUN touch src/main.rs \
