@@ -68,6 +68,10 @@ playwright-report/
 test-results/
 # E2E output
 frontend/e2e/results/
+# Vitest UI output
+.vitest-cache/
+# k6 / load-test output
+k6-results/
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Generated docs / summaries (do not commit generated docs)
