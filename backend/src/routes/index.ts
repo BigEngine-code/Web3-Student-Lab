@@ -50,6 +50,7 @@ import relayerRouter from './relayer.routes.js';
 import storageRouter from './storage.routes.js';
 import passkeyRouter from './passkey.routes.js';
 import webhooksRouter from './webhooks.js';
+import canvasRouter from './canvas.routes.js';
 
 const router: ReturnType<typeof Router> = Router();
 
@@ -73,6 +74,7 @@ router.use('/courses', validateWorkspaceMembership, coursesRouter);
 router.use('/enrollments', validateWorkspaceMembership, enrollmentsRouter);
 router.use('/feedback', validateWorkspaceMembership, feedbackRouter);
 router.use('/learning', validateWorkspaceMembership, learningRoutes);
+router.use('/canvas', validateWorkspaceMembership, canvasRouter);
 
 router.use('/dashboard', dashboardRoutes);
 router.use('/dashboard/activity-log', activityLogRouter);
