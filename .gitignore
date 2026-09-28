@@ -63,6 +63,10 @@ coverage/
 # Jest / Vitest snapshots
 **/__snapshots__/
 **/*.snap
+# Test snapshot directories (any variant)
+**/testsnapshot/
+**/test-snapshot/
+**/testSnapshots/
 # Playwright
 playwright-report/
 test-results/
