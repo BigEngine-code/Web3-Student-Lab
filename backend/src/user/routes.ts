@@ -145,6 +145,31 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
   }
 });
 
+import { anonymizationService } from '../services/anonymizationService.js';
+
+/**
+ * @route   DELETE /api/user/me
+ * @desc    GDPR Account Deletion & Cryptographic Anonymization Pipeline (Issue #1115)
+ * @access  Private
+ */
+router.delete(['/me', '/delete'], authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const receipt = await anonymizationService.deleteAndAnonymizeStudent(req.user.id);
+    res.status(200).json(receipt);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to process GDPR account deletion' });
+  }
+});
+
 /**
  * @route   GET /api/user/onboarding
  * @desc    Get user onboarding state (mocked)

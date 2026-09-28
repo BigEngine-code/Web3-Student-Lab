@@ -11,7 +11,8 @@ configureAxe({
 import '@testing-library/jest-dom/vitest';
 import 'fake-indexeddb/auto';
 import { cleanup } from '@testing-library/react';
-import { afterEach, vi } from 'vitest';
+import { afterEach, beforeAll, afterAll, vi } from 'vitest';
+import { server } from '../mocks/server';
 import { webcrypto } from 'node:crypto';
 
 // Polyfill window.crypto with Node's webcrypto so crypto.subtle is available in jsdom
@@ -36,8 +37,20 @@ Object.defineProperty(window.navigator, 'clipboard', {
   },
 });
 
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'bypass' });
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  indexedDB.deleteDatabase('web3-student-lab-p2p-crypto');
+  server.resetHandlers();
+  if (typeof indexedDB !== 'undefined') {
+    indexedDB.deleteDatabase('web3-student-lab-p2p-crypto');
+  }
 });
+
+afterAll(() => {
+  server.close();
+});
+

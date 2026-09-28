@@ -86,6 +86,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis Sentinel 3
+  redis-sentinel-3:
+    image: redis:7-alpine
+    container_name: web3-student-lab-sentinel-3
+    restart: always
+    ports:
+      - "26381:26379"
+    command: redis-sentinel /etc/sentinel.conf --port 26379
+    volumes:
+      - ./redis-sentinel.conf:/etc/sentinel.conf:ro
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Redis Cluster Node 1
   redis-cluster-1:
     image: redis:7-alpine
@@ -231,6 +249,30 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - web3-network
+
+  frontend:
+    build:
+      context: ./
+      dockerfile: frontend/Dockerfile
+    container_name: web3-student-lab-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 0)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - web3-network
 

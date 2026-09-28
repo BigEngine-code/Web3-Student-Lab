@@ -1,3 +1,4 @@
+import { CommandPalette } from '@/components/common/CommandPalette';
 import { KeyboardShortcutsProvider } from '@/components/keyboard/KeyboardShortcutsProvider';
 import Navbar from '@/components/layout/Navbar';
 import RenderWarningModal from '@/components/layout/RenderWarningModal';
@@ -8,7 +9,7 @@ import { OfflineSyncHandler } from '@/components/OfflineSyncHandler';
 import { SkipLink } from '@/components/ui/SkipLink';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
-import { ThemeProvider } from '@/contexts/ThemeContext';
+import { Providers as ThemeProvider } from '@/lib/theme/providers';
 import { TutorialProvider } from '@/contexts/TutorialContext';
 import { WalletProvider } from '@/contexts/WalletContext';
 import { Web3OnboardingProvider } from '@/contexts/Web3OnboardingContext';
@@ -25,7 +26,6 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -34,28 +34,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className="overflow-x-hidden">
       <head>
-        <script
-          suppressHydrationWarning
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                try {
-                  var theme = localStorage.getItem('web3-lab-theme');
-                  var isDark = theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches);
-                  if (isDark) {
-                    document.documentElement.classList.add('dark');
-                  } else {
-                    document.documentElement.classList.remove('dark');
-                  }
-                } catch (e) {}
-              })();
-            `,
-          }}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;700;900&display=swap"
+          rel="stylesheet"
         />
       </head>
-      <body className="bg-background text-foreground min-h-screen antialiased" suppressHydrationWarning>
+      <body className="bg-background text-foreground min-h-screen antialiased overflow-x-hidden" suppressHydrationWarning>
         <ThemeProvider>
           <WalletProvider>
             <AuthProvider>
@@ -79,6 +67,7 @@ export default function RootLayout({
                           <WalletGate>{children}</WalletGate>
                         </main>
                         <ToastContainer />
+                        <CommandPalette />
                         <OfflineNotification />
                       </TutorialProvider>
                     </KeyboardShortcutsProvider>

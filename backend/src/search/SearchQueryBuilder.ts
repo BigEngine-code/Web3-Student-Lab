@@ -143,6 +143,6 @@ export class SearchQueryBuilder {
     const direction = parts[1];
     const dir = direction === 'desc' ? 'desc' : 'asc';
 
-    return [{ [field]: dir }];
+    return [{ [field as string]: dir }];
   }
 }

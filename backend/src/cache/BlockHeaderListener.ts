@@ -51,7 +51,7 @@ export class BlockHeaderListener extends EventEmitter {
    */
   stop(): void {
     if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
+      clearInterval(this.pollingInterval as any);
       this.pollingInterval = null;
     }
     this.isListening = false;

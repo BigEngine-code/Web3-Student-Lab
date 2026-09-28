@@ -5,6 +5,12 @@ import { useEffect } from 'react';
 
 export function OfflineSyncHandler() {
   useEffect(() => {
+    if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
+        console.error('[SW Registration] Failed:', err);
+      });
+    }
+
     const cleanup = registerOnlineSync();
 
     if (navigator.onLine) {
@@ -18,3 +24,4 @@ export function OfflineSyncHandler() {
 
   return null;
 }
+

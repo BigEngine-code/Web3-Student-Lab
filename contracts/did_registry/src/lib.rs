@@ -1,23 +1,65 @@
-// Decentralized Identity (DID) Registry Contract
+// Decentralized Identity (DID) Registry Contract — `did:stellar` method
 // Language: Rust (Soroban)
+//
+// This contract is the on-chain anchor for the `did:stellar` DID method. It
+// implements the W3C DID Core 1.0 write/control model:
+//
+//   * The DID identifier is the 32-byte Stellar Ed25519 account id
+//     (`did:stellar:<hex>`).
+//   * The registry stores the controller `Address`, an off-chain GitHub
+//     handle binding, the Ed25519 *verification key* used to sign contributor
+//     proofs, and the set of verified contributor claims.
+//
+// Cryptographic *verification* of Ed25519 signatures over contributor proofs
+// is performed by the off-chain resolver (see backend `didResolver`), which
+// reads this on-chain state. On-chain we only store the binding so the
+// resolver can fetch the trusted public key.
 
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Map, Symbol, Vec,
+    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
+
+/// A single signed contributor proof claim (PR or issue milestone).
+#[derive(Clone)]
+#[contracttype]
+pub struct ContributorProof {
+    /// Kind of contribution: "pr" or "issue".
+    pub claim_type: String,
+    /// GitHub repository, e.g. "StellarDevHub/Web3-Student-Lab".
+    pub repo: String,
+    /// Identifier of the PR/issue (number or node id).
+    pub item_id: String,
+    /// GitHub handle of the contributor (must match the bound handle).
+    pub github_handle: String,
+    /// Unix timestamp (seconds) the claim was issued.
+    pub issued_at: u64,
+    /// Raw Ed25519 signature bytes over the canonical claim payload.
+    pub signature: Bytes,
+}
 
 #[derive(Clone)]
 #[contracttype]
 pub struct DIDDocument {
     pub owner: Address,
+    /// Off-chain GitHub handle bound to this DID.
+    pub github_handle: Option<String>,
+    /// Social handles keyed by provider symbol (github or discord).
+    pub social_identities: Map<Symbol, String>,
+    /// Ed25519 verification key (32 bytes) used to sign contributor proofs.
+    pub verification_key: Option<BytesN<32>>,
     pub attributes: Map<Symbol, Bytes>,
     pub controllers: Vec<Address>,
     pub revoked: bool,
+    /// Stored contributor proofs (mirror of on-chain claims).
+    pub proofs: Vec<ContributorProof>,
 }
 
 #[contracttype]
 pub enum DataKey {
     DIDs,
+    /// Map<BytesN<32>, Vec<ContributorProof>> — claims per DID.
+    Proofs,
 }
 
 #[contract]
@@ -35,12 +77,112 @@ impl DIDRegistryContract {
         assert!(!dids.contains_key(did.clone()), "DID already registered");
         let doc = DIDDocument {
             owner: owner.clone(),
+            github_handle: None,
+            social_identities: Map::new(&env),
+            verification_key: None,
             attributes,
             controllers: Vec::new(&env),
             revoked: false,
+            proofs: Vec::new(&env),
         };
+        dids.set(did.clone(), doc);
+        let mut proofs: Map<BytesN<32>, Vec<ContributorProof>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proofs)
+            .unwrap_or_else(|| Map::new(&env));
+        proofs.set(did.clone(), Vec::new(&env));
+        env.storage().persistent().set(&DataKey::DIDs, &dids);
+        env.storage().persistent().set(&DataKey::Proofs, &proofs);
+    }
+
+    /// Bind an off-chain GitHub handle to the DID. Only the owner may bind.
+    pub fn bind_github(env: Env, sender: Address, did: BytesN<32>, handle: String) {
+        sender.require_auth();
+        let mut dids: Map<BytesN<32>, DIDDocument> =
+            env.storage().persistent().get(&DataKey::DIDs).unwrap();
+        let mut doc = dids.get(did.clone()).unwrap();
+        assert!(!doc.revoked, "DID revoked");
+        assert!(doc.owner == sender, "Only owner can bind github handle");
+        doc.github_handle = Some(handle);
+        doc.social_identities
+            .set(Symbol::new(&env, "github"), doc.github_handle.clone().unwrap());
+        dids.set(did.clone(), doc);
+        env.storage().persistent().set(&DataKey::DIDs, &dids);
+    }
+
+    /// Bind a social handle to the DID. Only the owner may bind; verifiers must
+    /// separately validate the provider proof associated with the handle.
+    pub fn bind_social(
+        env: Env,
+        sender: Address,
+        did: BytesN<32>,
+        provider: Symbol,
+        handle: String,
+    ) {
+        sender.require_auth();
+        assert!(
+            provider == Symbol::new(&env, "github") || provider == Symbol::new(&env, "discord"),
+            "Unsupported social provider"
+        );
+        let mut dids: Map<BytesN<32>, DIDDocument> =
+            env.storage().persistent().get(&DataKey::DIDs).unwrap();
+        let mut doc = dids.get(did.clone()).unwrap();
+        assert!(!doc.revoked, "DID revoked");
+        assert!(doc.owner == sender, "Only owner can bind social identity");
+        if provider == Symbol::new(&env, "github") {
+            doc.github_handle = Some(handle.clone());
+        }
+        doc.social_identities.set(provider, handle);
         dids.set(did, doc);
         env.storage().persistent().set(&DataKey::DIDs, &dids);
+    }
+
+    /// Set the Ed25519 verification key used to sign contributor proofs.
+    pub fn set_verification_key(env: Env, sender: Address, did: BytesN<32>, key: BytesN<32>) {
+        sender.require_auth();
+        let mut dids: Map<BytesN<32>, DIDDocument> =
+            env.storage().persistent().get(&DataKey::DIDs).unwrap();
+        let mut doc = dids.get(did.clone()).unwrap();
+        assert!(!doc.revoked, "DID revoked");
+        assert!(doc.owner == sender, "Only owner can set verification key");
+        doc.verification_key = Some(key);
+        dids.set(did.clone(), doc);
+        env.storage().persistent().set(&DataKey::DIDs, &dids);
+    }
+
+    /// Append a signed contributor proof claim. Only the owner may add; the
+    /// resolver performs the cryptographic verification off-chain.
+    pub fn add_contributor_proof(
+        env: Env,
+        sender: Address,
+        did: BytesN<32>,
+        proof: ContributorProof,
+    ) {
+        sender.require_auth();
+        let dids: Map<BytesN<32>, DIDDocument> =
+            env.storage().persistent().get(&DataKey::DIDs).unwrap();
+        let doc = dids.get(did.clone()).unwrap();
+        assert!(!doc.revoked, "DID revoked");
+        assert!(
+            doc.owner == sender || doc.controllers.contains(&sender),
+            "Not authorized"
+        );
+        if let Some(handle) = doc.github_handle.clone() {
+            assert!(
+                handle == proof.github_handle,
+                "Proof handle must match bound handle"
+            );
+        }
+        let mut proofs: Map<BytesN<32>, Vec<ContributorProof>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proofs)
+            .unwrap_or_else(|| Map::new(&env));
+        let mut list = proofs.get(did.clone()).unwrap_or_else(|| Vec::new(&env));
+        list.push_back(proof);
+        proofs.set(did.clone(), list);
+        env.storage().persistent().set(&DataKey::Proofs, &proofs);
     }
 
     pub fn update(env: Env, sender: Address, did: BytesN<32>, attributes: Map<Symbol, Bytes>) {
@@ -114,7 +256,54 @@ impl DIDRegistryContract {
             .persistent()
             .get(&DataKey::DIDs)
             .unwrap_or_else(|| Map::new(&env));
-        dids.get(did)
+        let mut doc = dids.get(did.clone())?;
+        let proofs: Map<BytesN<32>, Vec<ContributorProof>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proofs)
+            .unwrap_or_else(|| Map::new(&env));
+        doc.proofs = proofs.get(did).unwrap_or_else(|| Vec::new(&env));
+        Some(doc)
+    }
+
+    /// Returns the bound GitHub handle for a DID, if any.
+    pub fn get_github_handle(env: Env, did: BytesN<32>) -> Option<String> {
+        let dids: Map<BytesN<32>, DIDDocument> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DIDs)
+            .unwrap_or_else(|| Map::new(&env));
+        dids.get(did).and_then(|d| d.github_handle)
+    }
+
+    /// Returns a verified social handle for a DID and provider, if any.
+    pub fn get_social_handle(env: Env, did: BytesN<32>, provider: Symbol) -> Option<String> {
+        let dids: Map<BytesN<32>, DIDDocument> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DIDs)
+            .unwrap_or_else(|| Map::new(&env));
+        dids.get(did).and_then(|doc| doc.social_identities.get(provider))
+    }
+
+    /// Returns the Ed25519 verification key for a DID, if set.
+    pub fn get_verification_key(env: Env, did: BytesN<32>) -> Option<BytesN<32>> {
+        let dids: Map<BytesN<32>, DIDDocument> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DIDs)
+            .unwrap_or_else(|| Map::new(&env));
+        dids.get(did).and_then(|d| d.verification_key)
+    }
+
+    /// Returns all stored contributor proofs for a DID.
+    pub fn get_proofs(env: Env, did: BytesN<32>) -> Vec<ContributorProof> {
+        let proofs: Map<BytesN<32>, Vec<ContributorProof>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proofs)
+            .unwrap_or_else(|| Map::new(&env));
+        proofs.get(did).unwrap_or_else(|| Vec::new(&env))
     }
 }
 
@@ -137,6 +326,51 @@ mod test {
         client.register(&owner, &did, &attrs);
         let doc = client.resolve(&did).unwrap();
         assert_eq!(doc.owner, owner);
+
+        // Bind github + verification key
+        let handle = String::from_str(&env, "alice");
+        client.bind_github(&owner, &did, &handle);
+        let discord_handle = String::from_str(&env, "alice#1234");
+        client.bind_social(
+            &owner,
+            &did,
+            &Symbol::new(&env, "discord"),
+            &discord_handle,
+        );
+        let key = BytesN::from_array(&env, &[9u8; 32]);
+        client.set_verification_key(&owner, &did, &key);
+
+        let doc = client.resolve(&did).unwrap();
+        assert_eq!(doc.github_handle, Some(handle));
+        assert_eq!(
+            client.get_social_handle(&did, &Symbol::new(&env, "discord")),
+            Some(discord_handle)
+        );
+        assert_eq!(doc.verification_key, Some(key));
+
+        // Add a contributor proof
+        let proof = ContributorProof {
+            claim_type: String::from_str(&env, "pr"),
+            repo: String::from_str(&env, "StellarDevHub/Web3-Student-Lab"),
+            item_id: String::from_str(&env, "123"),
+            github_handle: String::from_str(&env, "alice"),
+            issued_at: 1_700_000_000,
+            signature: Bytes::from_slice(&env, &[0u8; 64]),
+        };
+        client.add_contributor_proof(&owner, &did, &proof);
+        assert_eq!(client.get_proofs(&did).len(), 1);
+
+        // Handle mismatch must be rejected
+        let bad_proof = ContributorProof {
+            claim_type: String::from_str(&env, "pr"),
+            repo: String::from_str(&env, "x/y"),
+            item_id: String::from_str(&env, "1"),
+            github_handle: String::from_str(&env, "mallory"),
+            issued_at: 1,
+            signature: Bytes::from_slice(&env, &[0u8; 64]),
+        };
+        let result = client.try_add_contributor_proof(&owner, &did, &bad_proof);
+        assert!(result.is_err(), "proof with wrong handle must be rejected");
 
         // Key rotation
         let new_owner = Address::generate(&env);

@@ -1,6 +1,9 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+
+import { LivePoolYield } from '@/components/yield-calculator/LivePoolYield';
+import { TwapBacktestCanvas } from '@/components/analytics/TwapBacktestCanvas';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -208,6 +211,13 @@ export default function YieldCalculatorPage() {
           </button>
         </div>
 
+        {/* Live Soroban/Horizon AMM pool yield (Issue #1157). Sits above the
+            fixed-APY calculator so students see what an LP return is actually
+            made of before modelling a rate they typed in themselves. */}
+        <div className="mb-8">
+          <LivePoolYield />
+        </div>
+
         {/* Top Summary Cards */}
         <div className="mb-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-6 backdrop-blur-xl shadow-lg">
@@ -340,6 +350,11 @@ export default function YieldCalculatorPage() {
               <Line data={chartData} options={chartOptions} />
             </div>
           </div>
+        </div>
+
+        {/* TWAP oracle manipulation backtester (Issue #1405) */}
+        <div className="mb-8">
+          <TwapBacktestCanvas />
         </div>
 
         {/* Information Panel */}

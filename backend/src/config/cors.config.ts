@@ -33,25 +33,45 @@ function buildAllowedOrigins(): string[] {
   return [];
 }
 
+function isPreviewSubdomain(origin: string, subdomains: string[]): boolean {
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname;
+    return subdomains.some((sub) => hostname === sub || hostname.endsWith(`.${sub}`));
+  } catch {
+    return false;
+  }
+}
+
 const allowedOrigins = buildAllowedOrigins();
+const allowedPreviewSubdomains = parseOrigins(
+  process.env.CORS_ALLOWED_PREVIEW_SUBDOMAINS || ''
+);
 
 export function createCorsMiddleware(): (req: any, res: any, next: any) => void {
-  const options: CorsOptions = {
+  const corsHandler = cors({
     origin: (origin, callback) => {
       if (!origin) {
-        if (allowedOrigins.length > 0) {
-          return callback(null, false);
-        }
+        return callback(null, false);
+      }
+
+      const origins = buildAllowedOrigins();
+      const previewSubdomains = parseOrigins(
+        process.env.CORS_ALLOWED_PREVIEW_SUBDOMAINS || ''
+      );
+
+      if (origins.includes(origin)) {
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      if (previewSubdomains.length > 0 && isPreviewSubdomain(origin, previewSubdomains)) {
         return callback(null, true);
       }
 
       logger.warn('CORS origin rejected', {
         origin,
-        allowedOrigins,
+        allowedOrigins: origins,
+        allowedPreviewSubdomains: previewSubdomains,
         env: config.app.env,
       });
 
@@ -64,15 +84,21 @@ export function createCorsMiddleware(): (req: any, res: any, next: any) => void 
     maxAge: 86400,
     preflightContinue: false,
     optionsSuccessStatus: 204,
-  };
+  });
 
-  return cors(options);
+  return (req: any, res: any, next: any) => {
+    if (req.headers && req.headers.origin === 'null') {
+      return res.status(403).json({ error: 'Origin not allowed' });
+    }
+    return corsHandler(req, res, next);
+  };
 }
 
 export function getCorsConfigForLogging() {
   return {
     environment: config.app.env,
     allowedOrigins,
-    hasWildcard: allowedOrigins.length === 0,
+    allowedPreviewSubdomains,
+    hasWildcard: false,
   };
 }

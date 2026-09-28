@@ -11,6 +11,7 @@ export const contractCompileSchema = z.object({
   optimization: z.boolean().default(false),
   target: z.enum(['solidity', 'evm', 'soroban', 'wasm']),
   entryPoint: z.string().max(128).optional(),
+  projectId: z.string().max(128).optional(),
 });
 
 export const contractCancelSchema = z.object({
@@ -25,7 +26,15 @@ export const contractExecutionSchema = z.object({
   parameters: z
     .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
     .max(50, 'Maximum of 50 parameters allowed.')
+
     .optional(),
   gasLimit: z.number().int().positive().max(10_000_000, 'Gas limit must be positive and no more than 10,000,000.'),
   caller: z.string().max(128).optional(),
+  /** Base64-encoded WASM binary — when present, execution runs in the sandboxed WASM engine (#1420). */
+  wasmBase64: z
+    .string()
+    .max(2_000_000, 'wasmBase64 must not exceed ~1.5MB of encoded WASM.')
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'wasmBase64 must be valid base64.')
+    .optional(),
+  memoryLimitMb: z.number().positive().max(128, 'memoryLimitMb cannot exceed the 128MB sandbox ceiling.').optional(),
 });

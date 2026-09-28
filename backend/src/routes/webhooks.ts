@@ -7,6 +7,7 @@ import type {
 import {
     canonicalizeWebhookPayload,
     enqueueWebhookDeliveries,
+    getDeliveryHistory,
     verifyWebhookSignature,
 } from '../services/webhooks/index.js';
 import logger from '../utils/logger.js';
@@ -53,6 +54,77 @@ router.get('/health', async (_req: Request, res: Response) => {
     status: 'ok',
     mode: 'webhook-dispatch',
   });
+});
+
+// GET /deliveries — delivery log inspection for the admin dashboard.
+// Returns recent webhook delivery attempts (in-memory rolling window),
+// optionally filtered by destination URL or event type.
+router.get('/deliveries', async (req: Request, res: Response) => {
+  try {
+    const { url, event, state, limit } = req.query;
+
+    let deliveries = getDeliveryHistory();
+
+    if (typeof url === 'string' && url.length > 0) {
+      deliveries = deliveries.filter((d) => d.destinationUrl.includes(url));
+    }
+    if (typeof event === 'string' && event.length > 0) {
+      deliveries = deliveries.filter((d) => d.eventType === event);
+    }
+    if (typeof state === 'string' && state.length > 0) {
+      deliveries = deliveries.filter((d) => d.state === state);
+    }
+
+    const parsedLimit = Number(limit);
+    const capped = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 100;
+
+    return res.status(200).json({
+      status: 'success',
+      count: deliveries.length,
+      deliveries: deliveries.slice(0, capped),
+    });
+  } catch (error) {
+    logger.error('Failed to list webhook deliveries:', error);
+    return res.status(500).json({ error: 'Failed to list webhook deliveries' });
+  }
+});
+
+import {
+  getStellarWebhookSecret,
+  processStellarHorizonWebhook,
+  verifyStellarWebhookSignature,
+} from '../services/webhooks/stellarWebhook.service.js';
+
+router.post(['/stellar', '/horizon'], async (req: Request, res: Response) => {
+  try {
+    const signature = req.header('x-stellar-signature') || req.header('x-webhook-signature') || '';
+    const timestamp = req.header('x-stellar-timestamp') || req.header('x-webhook-timestamp') || '';
+    const rawPayload = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    const secret = getStellarWebhookSecret();
+
+    if (!signature || !timestamp) {
+      logger.warn('Stellar webhook missing signature or timestamp headers');
+      return res.status(401).json({ error: 'Missing webhook signature or timestamp headers' });
+    }
+
+    const isValid = verifyStellarWebhookSignature(rawPayload, signature, secret, timestamp);
+    if (!isValid) {
+      logger.warn('Rejected Stellar Horizon webhook with invalid signature or expired timestamp');
+      return res.status(401).json({ error: 'Unauthorized: Invalid signature or expired timestamp' });
+    }
+
+    const result = await processStellarHorizonWebhook(req.body);
+
+    return res.status(200).json({
+      status: 'success',
+      result,
+    });
+  } catch (error: any) {
+    logger.error('Failed to process Stellar Horizon webhook:', error);
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : 'Failed to process Stellar Horizon webhook',
+    });
+  }
 });
 
 router.post(['/ingest', '/dispatch'], idempotency(), async (req: Request, res: Response) => {
@@ -132,6 +204,7 @@ router.delete('/subscriptions/:id', async (req: Request, res: Response) => {
     if (!id || typeof id !== 'string') {
       return res.status(400).json({ error: 'Invalid subscription ID' });
     }
+
 
     const exists = await prisma.webhookSubscription.findUnique({
       where: { id },

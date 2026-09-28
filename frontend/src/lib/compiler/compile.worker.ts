@@ -143,7 +143,39 @@ async function runCompile(request: CancellableCompileRequest): Promise<void> {
     return false;
   };
 
-  postLog(cancellationId, 'info', `Starting browser worker compile for ${filePath}`);
+  postLog(cancellationId, 'info', `Starting sandboxed worker compile for ${filePath}`);
+
+  // Enforce strict execution timeout for sandboxed worker.
+  const timeoutMs = 3000;
+  const timeoutPromise = new Promise<void>((_, reject) => {
+    const id = setTimeout(() => {
+      reject(new Error('Execution timeout: worker terminated after 3 seconds'));
+    }, timeoutMs);
+    // Allow cancellation to clear the timer as well.
+    cancelledIds.add(cancellationId);
+  });
+
+  try {
+    await Promise.race([runCompileSandboxed(request), timeoutPromise]);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Execution timeout')) {
+      postLog(cancellationId, 'error', error.message);
+      postComplete(cancellationId, {
+        success: false,
+        warnings: [],
+        errors: [error.message],
+        exports: [],
+        wasmSizeKb: 0,
+        durationMs: timeoutMs,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function runCompileSandboxed(request: CancellableCompileRequest): Promise<void> {
+  const { source, filePath, cancellationId } = request;
 
   if (!(await sleep(200, cancellationId)) || checkCancelled()) return;
   postLog(cancellationId, 'info', 'Resolving Soroban dependencies...');

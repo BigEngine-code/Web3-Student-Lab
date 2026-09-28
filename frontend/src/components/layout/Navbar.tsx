@@ -12,6 +12,7 @@ import { primaryNav } from '@/lib/site-data';
 import { ArrowRight, Menu, X, Sparkles, ChevronDown, LogOut } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { useKeyboardShortcuts } from '@/components/keyboard/KeyboardShortcutsProvider';
+import MobileDrawer from './MobileDrawer';
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -165,82 +166,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      {open && (
-        <div className="border-t border-red-500/20 bg-black/95 backdrop-blur-2xl xl:hidden shadow-[0_20px_40px_rgba(220,38,38,0.1)] absolute w-full left-0">
-          <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 sm:px-6">
-            {primaryNav.map((item) => {
-              const active = isActive(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setOpen(false)}
-                  className={`rounded-2xl px-5 py-4 transition-all border ${
-                    active
-                      ? 'bg-red-500/10 border-red-500/30 shadow-[0_0_15px_rgba(220,38,38,0.15)]'
-                      : 'bg-white/5 border-transparent text-gray-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className={`block text-[10px] font-black uppercase tracking-[0.2em] ${active ? 'text-red-400' : 'text-white'}`}>{getNavLabel(item.label)}</span>
-                  <span className="mt-1.5 block text-[10px] font-light text-gray-500 leading-relaxed">{item.description}</span>
-                </Link>
-              );
-            })}
-
-            <div className="mt-6 mb-2 border-t border-white/10 pt-6">
-              <LanguageSelector />
-            </div>
-            
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {user ? (
-                <>
-                  <Link
-                    href="/admin/content"
-                    onClick={() => setOpen(false)}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-[10px] font-black uppercase tracking-[0.2em] text-white text-center hover:bg-white/10 transition-colors"
-                  >
-                    {t('nav.admin')}
-                  </Link>
-                  <Link
-                    href="/certificates"
-                    onClick={() => setOpen(false)}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-[10px] font-black uppercase tracking-[0.2em] text-white text-center hover:bg-white/10 transition-colors"
-                  >
-                    {t('nav.certificates')}
-                  </Link>
-                  <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4">
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">{t('nav.notifications')}</span>
-                    <NotificationBell />
-                  </div>
-                  <button
-                    onClick={() => {
-                      logout();
-                      setOpen(false);
-                    }}
-                    className="rounded-2xl bg-white/10 px-5 py-4 text-[10px] font-black uppercase tracking-[0.2em] text-white sm:col-span-2 hover:bg-white/20 transition-colors"
-                  >
-                    {t('nav.sign_out')}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <Link
-                    href={profileCompleted ? '/auth/login' : '/auth/register'}
-                    onClick={() => setOpen(false)}
-                    className="rounded-2xl bg-red-600 px-5 py-4 text-xs font-black uppercase tracking-[0.2em] text-white text-center shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:bg-red-500 transition-colors"
-                  >
-                    {publicKey
-                      ? profileCompleted
-                        ? t('nav.open_wallet_access')
-                        : t('nav.complete_profile')
-                      : t('nav.start_with_wallet')}
-                  </Link>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <MobileDrawer open={open} setOpen={setOpen} />
     </header>
   );
 }

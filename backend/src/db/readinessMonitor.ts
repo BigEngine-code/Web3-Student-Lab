@@ -14,8 +14,19 @@ export interface ReadinessResult {
   checks: {
     database: DependencyProbeResult;
     redis: DependencyProbeResult;
+    migrations: DependencyProbeResult;
   };
   checkedAt: string;
+}
+
+let migrationsApplied = process.env.NODE_ENV === 'test';
+
+export function markMigrationsApplied(applied: boolean): void {
+  migrationsApplied = applied;
+}
+
+export function areMigrationsApplied(): boolean {
+  return migrationsApplied;
 }
 
 const DEFAULT_READINESS_TIMEOUT_MS = 3000;
@@ -96,11 +107,16 @@ export async function checkReadiness(): Promise<ReadinessResult> {
     checkRedis(timeoutMs),
   ]);
 
-  const ready = database.status === 'ready' && redis.status === 'ready';
+  const migrations: DependencyProbeResult = migrationsApplied
+    ? { status: 'ready', latencyMs: 0 }
+    : { status: 'unavailable', latencyMs: 0, error: 'migrations pending' };
+
+  const ready =
+    database.status === 'ready' && redis.status === 'ready' && migrations.status === 'ready';
 
   return {
     status: ready ? 'ready' : 'not_ready',
-    checks: { database, redis },
+    checks: { database, redis, migrations },
     checkedAt: new Date().toISOString(),
   };
 }

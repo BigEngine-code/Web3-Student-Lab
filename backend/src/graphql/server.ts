@@ -15,10 +15,10 @@ export const createGraphQLServer = async () => {
   const server = new ApolloServer({
     typeDefs,
     resolvers,
-    introspection: process.env.NODE_ENV !== 'production',
+    introspection: !['production', 'staging'].includes(process.env.NODE_ENV || 'development'),
     validationRules: [
-      depthLimitRule(() => config.graphql?.maxDepth ?? 10),
-      complexityLimitRule(() => config.graphql?.maxComplexity ?? 100),
+      depthLimitRule(() => config.graphql?.maxDepth ?? 6),
+      complexityLimitRule(() => config.graphql?.maxComplexity ?? 500),
     ],
     plugins: [
       {

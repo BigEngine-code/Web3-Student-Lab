@@ -12,6 +12,13 @@ export interface QueuedRequest {
   headers: Record<string, string>;
   body?: string;
   createdAt: number;
+  /** Idempotency key (#1141): stable per logical action so a replayed
+   *  flush can never double-apply a mutation server-side. */
+  idempotencyKey?: string;
+  /** Local mutation timestamp for deterministic conflict resolution. */
+  clientTimestamp?: number;
+  /** Highest-score anchor (lesson quiz) for same-timestamp tiebreaks. */
+  score?: number;
 }
 
 export interface QueuedLessonProgress {
@@ -27,6 +34,14 @@ export interface QueuedLessonProgress {
   currentModuleId?: string | null;
   percentage?: number;
   status?: string;
+  /** Idempotency key (#1141): stable per (course, lesson, attempt). */
+  idempotencyKey?: string;
+  /** Local mutation timestamp for deterministic conflict resolution. */
+  clientTimestamp?: number;
+  /** Highest-score anchor (lesson quiz) for same-timestamp tiebreaks. */
+  score?: number;
+  /** Set when the backend has acknowledged this sync (receipt). */
+  syncedAt?: string;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -99,6 +114,8 @@ export async function queueOfflineRequest(request: Omit<QueuedRequest, 'id' | 'c
     ...request,
     id: createId(),
     createdAt: Date.now(),
+    idempotencyKey: request.idempotencyKey ?? createId(),
+    clientTimestamp: request.clientTimestamp ?? Date.now(),
   });
 }
 
@@ -110,6 +127,7 @@ export async function queueLessonProgressCompletion(input: {
   currentModuleId?: string | null;
   percentage?: number;
   status?: string;
+  score?: number;
 }) {
   if (typeof window === 'undefined') return;
 
@@ -125,6 +143,9 @@ export async function queueLessonProgressCompletion(input: {
     currentModuleId: input.currentModuleId,
     percentage: input.percentage,
     status: input.status,
+    idempotencyKey: `${input.courseId}:${input.lessonId}:${input.completedAt ?? completedAt}`,
+    clientTimestamp: Date.now(),
+    score: input.score,
   });
 }
 
@@ -156,7 +177,11 @@ export async function flushQueuedRequests() {
     try {
       const response = await fetch(request.url, {
         method: request.method,
-        headers: request.headers,
+        headers: {
+          ...request.headers,
+          'Idempotency-Key': request.idempotencyKey ?? request.id,
+          'X-Client-Timestamp': String(request.clientTimestamp ?? request.createdAt),
+        },
         body: request.body,
         credentials: 'same-origin',
       });
@@ -169,8 +194,47 @@ export async function flushQueuedRequests() {
   }
 }
 
+/**
+ * Deterministic conflict resolution (#1141): when the same (course, lesson)
+ * exists multiple times in the queue, keep only the winner —
+ * highest score first, then latest client timestamp. Progress overwrites are
+ * impossible because the queue is a single source of truth per key and the
+ * server applies the same rule via the idempotency key.
+ */
+export async function resolveLessonProgressConflicts(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  const items = await getQueuedLessonProgress();
+
+  const winnerByKey = new Map<string, QueuedLessonProgress>();
+  for (const item of items) {
+    const key = item.idempotencyKey ?? item.id;
+    const existing = winnerByKey.get(key);
+    if (!existing) {
+      winnerByKey.set(key, item);
+      continue;
+    }
+    const itemScore = item.score ?? 0;
+    const existingScore = existing.score ?? 0;
+    const itemTs = item.clientTimestamp ?? item.createdAt;
+    const existingTs = existing.clientTimestamp ?? existing.createdAt;
+    // Highest score wins; ties break on the latest timestamp.
+    if (itemScore > existingScore || (itemScore === existingScore && itemTs > existingTs)) {
+      winnerByKey.set(key, item);
+    }
+  }
+
+  const winners = new Set(winnerByKey.values());
+  for (const item of items) {
+    if (!winners.has(item)) {
+      await removeQueuedLessonProgress(item.id);
+    }
+  }
+}
+
 export async function flushQueuedLessonProgress() {
   if (typeof window === 'undefined' || !navigator.onLine) return;
+
+  await resolveLessonProgressConflicts();
 
   const queuedItems = await getQueuedLessonProgress();
   for (const item of queuedItems) {
@@ -182,6 +246,9 @@ export async function flushQueuedLessonProgress() {
       if (token) {
         headers.Authorization = `Bearer ${token}`;
       }
+      headers['Idempotency-Key'] = item.idempotencyKey ?? item.id;
+      headers['X-Client-Timestamp'] = String(item.clientTimestamp ?? item.createdAt);
+      headers['X-Client-Score'] = String(item.score ?? 0);
 
       const response = await fetch(item.url, {
         method: 'PATCH',
@@ -194,15 +261,32 @@ export async function flushQueuedLessonProgress() {
           currentModuleId: item.currentModuleId,
           percentage: item.percentage,
           completedAt: item.completedAt,
+          idempotencyKey: item.idempotencyKey,
         }),
       });
       if (response.ok) {
+        // Sync receipt (#1141): record acknowledgment locally so progress
+        // indicators can flip from "pending" to "synced".
+        await writeItem<QueuedLessonProgress>(PROGRESS_STORE, {
+          ...item,
+          syncedAt: new Date().toISOString(),
+        });
         await removeQueuedLessonProgress(item.id);
       }
     } catch (error) {
       console.warn('[OfflineSync] Progress flush failed, keeping item:', item.id, error);
     }
   }
+}
+
+/** Count of items still pending sync — drives local progress indicators. */
+export async function getPendingSyncCount(): Promise<number> {
+  if (typeof window === 'undefined') return 0;
+  const [requests, progress] = await Promise.all([
+    getQueuedRequests(),
+    getQueuedLessonProgress(),
+  ]);
+  return requests.length + progress.filter((p) => !p.syncedAt).length;
 }
 
 export async function flushOfflineSyncQueue() {

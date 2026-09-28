@@ -1,8 +1,10 @@
 import { Router } from 'express';
-import dashboardRoutes from '../dashboard/dashboard.routes.js';
 import activityLogRouter from '../dashboard/activityLog.routes.js';
+import dashboardRoutes from '../dashboard/dashboard.routes.js';
 import feedbackRouter from '../feedback/feedback.routes.js';
 import licenseRoutes from '../licenses/license.routes.js';
+import { optionalWorkspaceMiddleware } from '../middleware/WorkspaceContext.js';
+import { validateWorkspaceMembership } from '../middleware/workspaceMembership.js';
 import userRouter from '../user/routes.js';
 import analyticsRouter from './analytics.routes.js';
 import authRoutes from './auth/auth.routes.js';
@@ -11,53 +13,73 @@ import contractRouter from './contracts.routes.js';
 import coursesRouter from './courses.js';
 import enrollmentsRouter from './enrollments.js';
 import exportRouter from './export.routes.js';
-import generatorRouter from './generator/generator.routes.js';
 import explorerRouter from './generator/explorer.routes.js';
+import generatorRouter from './generator/generator.routes.js';
 import healthRouter from './health.routes.js';
 import i18nRouter from './i18n.routes.js';
-import osctRouter from './osct/osct.routes.js';
-import playgroundRouter from './playground/playground.routes.js';
-import simulatorRouter from './simulator/simulator.routes.js';
 import learningRoutes from './learning/learning.routes.js';
+import oauthRouter from './oauth.routes.js';
+import osctRouter from './osct/osct.routes.js';
+import playgroundValidateRouter from './playground.routes.js';
+import playgroundRouter from './playground/playground.routes.js';
+import privacyPolicyRouter from './privacyPolicy.routes.js';
 import curriculumSearchRouter from './search/curriculum-search.routes.js';
 import securityRouter from './security.routes.js';
 import seoRouter from './seo.routes.js';
-import studentsRouter from './students.js';
+import simulatorRouter from './simulator/simulator.routes.js';
 import simulatorErrorsRouter from './simulatorErrors.routes.js';
+import studentsRouter from './students.js';
 import termsOfServiceRouter from './termsOfService.routes.js';
-import privacyPolicyRouter from './privacyPolicy.routes.js';
-import playgroundValidateRouter from './playground.routes.js';
-import oauthRouter from './oauth.routes.js';
 import tokenomicsRouter from './tokenomics.routes.js';
 
+import infrastructureRouter from '../infrastructure/infrastructure.routes.js';
 import notificationRouter from '../notifications/notification.routes.js';
 import notificationPreferencesRouter from '../notifications/preferences.routes.js';
-import metricsRouter from './metrics.routes.js';
-import dependenciesRouter from './dependencies.routes.js';
-import infrastructureRouter from '../infrastructure/infrastructure.routes.js';
 import simulatorIdeasRouter from '../simulator/simulator.routes.js';
+import dependenciesRouter from './dependencies.routes.js';
+import metricsRouter from './metrics.routes.js';
 
-import deployRouter from './deploy.routes.js';
-import webhooksRouter from './webhooks.js';
-import adminDLQRouter from './admin/dlq.routes.js';
 import adminCoursesRouter from './admin/courses.routes.js';
+import adminDLQRouter from './admin/dlq.routes.js';
 import apiRouter from './api.js';
+import contributorProofsRouter from './contributor-proofs.routes.js';
+import deployRouter from './deploy.routes.js';
+import didRouter from './did.routes.js';
 import policyRouter from './policy/policy.routes.js';
+import relayerRouter from './relayer.routes.js';
 import storageRouter from './storage.routes.js';
+import passkeyRouter from './passkey.routes.js';
+import webhooksRouter from './webhooks.js';
+import canvasRouter from './canvas.routes.js';
+import subscriptionsRouter from './subscriptions.routes.js';
 
 const router: ReturnType<typeof Router> = Router();
+
+// Populate the AsyncLocalStorage workspace context from the `x-workspace-id`
+// header (or `workspaceId` query param) so the Prisma workspace-isolation
+// extension filters every query automatically (#1119). Optional: requests
+// without a workspace header pass through unscoped.
+router.use(optionalWorkspaceMiddleware);
 
 router.use('/health', healthRouter);
 router.use('/analytics', analyticsRouter);
 router.use('/students', studentsRouter);
-router.use('/certificates', certificatesRouter);
-router.use('/courses', coursesRouter);
-router.use('/enrollments', enrollmentsRouter);
+
+// Cross-tenant data lives in courses, submissions (enrollments), certificates
+// and learning progress — enforce workspace membership on those groups
+// (#1119). Runs after the workspace context is populated above; requests
+// without an authenticated user or workspace header pass through, while
+// the Prisma extension still applies per-query tenant filtering.
+router.use('/certificates', validateWorkspaceMembership, certificatesRouter);
+router.use('/courses', validateWorkspaceMembership, coursesRouter);
+router.use('/enrollments', validateWorkspaceMembership, enrollmentsRouter);
+router.use('/feedback', validateWorkspaceMembership, feedbackRouter);
+router.use('/learning', validateWorkspaceMembership, learningRoutes);
+router.use('/canvas', validateWorkspaceMembership, canvasRouter);
+
 router.use('/dashboard', dashboardRoutes);
 router.use('/dashboard/activity-log', activityLogRouter);
-router.use('/feedback', feedbackRouter);
 router.use('/auth', authRoutes);
-router.use('/learning', learningRoutes);
 router.use('/search', curriculumSearchRouter);
 router.use('/contracts', contractRouter);
 router.use('/notifications', notificationRouter);
@@ -73,11 +95,15 @@ router.use('/simulator', simulatorRouter);
 router.use('/playground', playgroundRouter);
 router.use('/export', exportRouter);
 router.use('/deploy', deployRouter);
+router.use('/did', didRouter);
 router.use('/webhooks', webhooksRouter);
 router.use('/admin/dlq', adminDLQRouter);
 router.use('/admin/courses', adminCoursesRouter);
 router.use('/policy', policyRouter);
 router.use('/storage', storageRouter);
+router.use('/passkey', passkeyRouter);
+router.use('/relayer', relayerRouter);
+router.use('/subscriptions', subscriptionsRouter);
 router.use('/user', userRouter);
 router.use('/metrics', metricsRouter);
 router.use('/dependencies', dependenciesRouter);
@@ -90,5 +116,109 @@ router.use('/playground/privacy-policy', privacyPolicyRouter);
 router.use('/oauth', oauthRouter);
 router.use('/', apiRouter);
 router.use('/tokenomics', tokenomicsRouter);
+router.use('/contributor-proofs', contributorProofsRouter);
+
+export default router;
+
+// backend/src/index.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { Logger } from '@nestjs/common';
+import { PrismaService } from './database/prisma.service';
+
+async function bootstrap() {
+    const logger = new Logger('Bootstrap');
+    const app = await NestFactory.create(AppModule);
+
+    // Enable shutdown hooks for NestJS (listens to SIGTERM/SIGINT)
+    app.enableShutdownHooks();
+
+    const port = process.env.PORT || 3000;
+    const server = await app.listen(port);
+    logger.log(`Application is running on port ${port}`);
+
+    const gracefulShutdown = async (signal: string) => {
+        logger.warn(`Received ${signal}. Starting graceful shutdown...`);
+
+        const shutdownTimer = setTimeout(() => {
+            logger.error('Graceful shutdown timed out after 15s. Forcefully terminating process.');
+            process.exit(1);
+        }, 15000);
+
+        try {
+            // 1. Stop accepting new HTTP connections
+            await new Promise<void>((resolve, reject) => {
+                server.close((err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+            logger.log('HTTP server closed. No longer accepting new connections.');
+
+            // 2. Drain database connection pools and active in-flight transactions
+            const prismaService = app.get(PrismaService);
+            if (prismaService && typeof prismaService.$disconnect === 'function') {
+                await prismaService.$disconnect();
+                logger.log('Database connection pools drained and disconnected successfully.');
+            }
+
+            // 3. Close NestJS application context (BullMQ queues, WebSockets, custom providers)
+            await app.close();
+            logger.log('NestJS application context closed cleanly.');
+
+            clearTimeout(shutdownTimer);
+            logger.log('Graceful shutdown completed successfully. Exiting process.');
+            process.exit(0);
+        } catch (error) {
+            logger.error('Error during graceful shutdown execution:', error);
+            clearTimeout(shutdownTimer);
+            process.exit(1);
+        }
+    };
+
+    // Register signal listeners
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}
+
+bootstrap().catch((err) => {
+    console.error('Failed to start application:', err);
+    process.exit(1);
+});
+const router = Router();
+
+// Middleware: Tenant extraction & Request Tracing ID injection
+router.use((req: Request, res: Response, next: NextFunction) => {
+    const traceId = (req.headers['x-request-id'] as string) || uuidv4();
+    const tenantId = (req.headers['x-tenant-id'] as string) || 'default';
+
+    req.headers['x-request-id'] = traceId;
+    res.setHeader('X-Request-Id', traceId);
+    res.setHeader('X-Tenant-Id', tenantId);
+
+    next();
+});
+
+// Standardized Success/Error Envelope Interceptor
+router.use('/v1', apiRouter);
+
+// Global Standardized Error Envelope Handler
+router.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    const statusCode = err.status || err.statusCode || 500;
+    const traceId = req.headers['x-request-id'];
+
+    res.status(statusCode).json({
+        success: false,
+        error: {
+            code: err.code || 'INTERNAL_SERVER_ERROR',
+            message: err.message || 'An unexpected error occurred',
+            details: err.details || null,
+        },
+        meta: {
+            timestamp: new Date().toISOString(),
+            traceId,
+        },
+    });
+});
 
 export default router;

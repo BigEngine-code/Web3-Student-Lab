@@ -1,6 +1,6 @@
 'use client';
 
-import { SCPVisualizer } from '@/components/stellar-scp';
+import { QuorumSliceExplorer, SCPVisualizer } from '@/components/stellar-scp';
 
 export default function SCPPage() {
   return (
@@ -36,6 +36,12 @@ export default function SCPPage() {
         {/* Visualizer */}
         <div className="mb-8">
           <SCPVisualizer />
+
+          {/* Quorum slice explorer (Issue #1158): the trust graph itself, with
+              safety and liveness recomputed as the student cuts it. */}
+          <div className="mt-10">
+            <QuorumSliceExplorer />
+          </div>
         </div>
 
         {/* Info Section */}

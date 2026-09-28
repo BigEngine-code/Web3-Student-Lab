@@ -32,11 +32,13 @@ const DEFAULT_COST_CONFIG: CostConfig = {
   queryCost: 1,
   fieldCost: 1,
   depthCostFactor: 2,
-  maxCost: 1000,
-  maxDepth: 10,
+  maxCost: 500,
+  maxDepth: 6,
   costBudgetPerWindow: 5000,
   budgetWindowMs: 60000, // 1 minute
 };
+
+const INTROSPECTION_DISABLED_ENVS = new Set(['production', 'staging']);
 
 // Per-operation cost overrides for persisted/allowlisted operations
 const ALLOWLISTED_OPERATIONS = new Map<string, Partial<CostConfig>>([
@@ -169,10 +171,10 @@ export async function graphqlQueryComplexityLimiter(
 
     // Check introspection
     if (isIntrospectionQuery(query)) {
-      if (process.env.NODE_ENV === 'production') {
+      if (INTROSPECTION_DISABLED_ENVS.has(process.env.NODE_ENV || 'development')) {
         res.status(403).json({
           status: 'error',
-          message: 'Introspection queries are disabled in production.',
+          message: 'Introspection queries are disabled in this environment.',
         });
         return;
       }

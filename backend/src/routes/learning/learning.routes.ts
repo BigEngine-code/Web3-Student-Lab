@@ -193,6 +193,7 @@ router.get(
         where: {
           resourceType: 'lesson',
           resourceId: typeof lessonId === 'string' ? lessonId : ('' as string),
+
         },
       });
 

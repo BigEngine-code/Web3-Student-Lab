@@ -39,7 +39,7 @@ export class CacheWarmer {
    */
   stop(): void {
     if (this.warmingInterval) {
-      clearInterval(this.warmingInterval);
+      clearInterval(this.warmingInterval as any);
       this.warmingInterval = null;
     }
     this.isWarming = false;

@@ -26,11 +26,41 @@
     '''\.env\.example$''',
 
     # Documentation and policy files
-    '''docs/governance/SUPPLY_CHAIN_SECURITY\.md$''',
-    '''docs/governance/SECRET_SCANNING_POLICY\.md$''',
+    '''docs/.*''',
+    '''README\.md$''',
+    '''MVP_READINESS\.md$''',
+    '''INTEGRATION_GUIDE\.md$''',
 
-    # Generated/compiled output
+    # Generated, dependency cache and workflow configs
+    '''\.pnpm-store/.*''',
+    '''\.github/workflows/.*''',
+    '''docker-compose.*\.ya?ml$''',
+    '''scripts/setup\.sh$''',
     '''backend/coverage/.*''',
     '''frontend/coverage/.*''',
     '''backend/dist/.*''',
   ]
+
+[[rules]]
+  id = "stellar-secret-seed"
+  description = "Stellar Ed25519 secret key seed"
+  regex = '''S[A-Z0-9]{55}'''
+  tags = ["stellar", "secret", "key"]
+
+[[rules]]
+  id = "jwt-secret"
+  description = "JWT secret or token"
+  regex = '''(?i)jwt[_\-]?secret\s*[:=]\s*['"]?[A-Za-z0-9\-_]{32,}['"]?'''
+  tags = ["jwt", "secret"]
+
+[[rules]]
+  id = "generic-api-key"
+  description = "Generic API key"
+  regex = '''(?i)api[_\-\s]?key\s*[:=]\s*['"]?[A-Za-z0-9\-_]{16,}['"]?'''
+  tags = ["api-key", "secret"]
+
+[[rules]]
+  id = "private-key-block"
+  description = "PEM private key block"
+  regex = '''-----BEGIN ((RSA|EC|DSA|OPENSSH) )?PRIVATE KEY-----'''
+  tags = ["pem", "private-key"]

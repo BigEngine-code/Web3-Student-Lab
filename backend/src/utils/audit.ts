@@ -21,6 +21,22 @@ interface AuditDetailsRecord {
   [key: string]: unknown;
 }
 
+function buildChainInput(
+  prevHash: string | undefined,
+  timestamp: string,
+  userId: string | null | undefined,
+  action: string,
+  payload: Record<string, unknown>
+): string {
+  return [
+    prevHash ?? '',
+    timestamp,
+    userId ?? '',
+    action,
+    JSON.stringify(payload),
+  ].join('\x00');
+}
+
 /**
  * Logs an administrative or sensitive action to the database and immutable
  * file storage.  Sensitive fields must be stripped by the caller before
@@ -28,40 +44,47 @@ interface AuditDetailsRecord {
  */
 export async function logAudit(data: AuditLogData): Promise<void> {
   try {
-    // 1. Prepare log payload with correlation ID for distributed tracing
     const timestamp = new Date().toISOString();
     const correlationId = getCorrelationId();
+
+    const previousLog = await prisma.auditLog.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { prevHash: true },
+    });
+
+    const prevHash = previousLog?.prevHash ?? undefined;
+
     const payload = {
-      ...data,
-      timestamp,
+      userEmail: data.userEmail,
+      entity: data.entity,
+      entityId: data.entityId,
+      details: data.details,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
       correlationId,
     };
 
-    // 2. Generate a cryptographic hash of the payload for immutability proof
-    const hash = createHash('sha256')
-      .update(JSON.stringify(payload))
-      .digest('hex');
+    const chainInput = buildChainInput(prevHash, timestamp, data.userId, data.action, payload);
+    const hash = createHash('sha256').update(chainInput, 'utf8').digest('hex');
 
     const logEntry = {
-      ...payload,
+      ...data,
+      timestamp,
+      correlationId,
       hash,
     };
 
-    // 3. Write to immutable append-only file (Winston file transport)
     auditLogger.info(logEntry);
 
-    // 4. Build the details record for DB storage
     const detailsRecord: AuditDetailsRecord = {
       _hash: hash,
       correlationId,
     };
 
     if (typeof data.details === 'object' && data.details !== null) {
-      // Spread known-object details; unknown is widened to Record via index signature
       Object.assign(detailsRecord, data.details as Record<string, unknown>);
     }
 
-    // 5. Write to database for querying and UI display
     await prisma.auditLog.create({
       data: {
         userId: data.userId ?? null,
@@ -72,10 +95,10 @@ export async function logAudit(data: AuditLogData): Promise<void> {
         details: detailsRecord as any,
         ipAddress: data.ipAddress ?? null,
         userAgent: data.userAgent ?? null,
+        prevHash: prevHash ?? null,
       },
     });
 
-    // 6. Standard logging with correlation ID
     logger.info(
       `Audit Log: ${data.action} by ${data.userEmail ?? data.userId ?? 'unknown'}`,
       {
@@ -85,7 +108,6 @@ export async function logAudit(data: AuditLogData): Promise<void> {
       }
     );
   } catch (error) {
-    // Do not propagate — audit failure must not abort the primary request
     logger.error('Failed to create audit log:', {
       error,
       correlationId: getCorrelationId(),
@@ -118,7 +140,6 @@ export async function logRequestAudit(
 ): Promise<void> {
   const user = req.user as AuthenticatedUser | undefined;
 
-  // Narrow req.body to the subset that may carry email
   const body = req.body as BodyWithOptionalEmail | undefined;
   const fallbackEmail: string | null = body?.email ?? null;
 
@@ -133,3 +154,4 @@ export async function logRequestAudit(
     userAgent: (req.headers['user-agent'] as string | undefined) ?? null,
   });
 }
+

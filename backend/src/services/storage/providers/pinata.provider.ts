@@ -73,6 +73,7 @@ export class PinataStorageProvider implements StorageProvider {
     const form = new FormData();
     const contentBytes = new Uint8Array(input.content);
     form.append('file', new Blob([contentBytes], { type: input.mimeType }), input.filename);
+
     form.append(
       'pinataMetadata',
       JSON.stringify({

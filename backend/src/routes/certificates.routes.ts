@@ -6,9 +6,65 @@ import {
   RevokeCertificateSchema,
   ReissueCertificateSchema,
   BatchVerificationSchema,
+  AnchorMerkleCohortSchema,
+  VerifyMerkleInclusionSchema,
 } from './certificates/validation.schemas.js';
+import explorerRouter from './certificates/explorer.routes.js';
+import { certificatePdfGenerator } from '../certificates/PdfGenerator.js';
+import prisma from '../db/index.js';
+import logger from '../utils/logger.js';
 
 const router: ReturnType<typeof Router> = Router();
+
+// Mount public analytics explorer under /certificates/explorer
+router.use('/explorer', explorerRouter);
+
+/**
+ * @route   GET /api/v1/certificates/:certificateId/download.pdf
+ * @desc    Download a signed PDF diploma for a certificate.
+ * @access  Public
+ */
+router.get('/:certificateId/download.pdf', async (req, res) => {
+  try {
+    const { certificateId } = req.params;
+
+    const cert = await prisma.certificate.findUnique({
+      where: { id: certificateId },
+      include: {
+        student: { select: { firstName: true, lastName: true } },
+        course: { select: { title: true, instructor: true } },
+      },
+    });
+
+    if (!cert) {
+      return res.status(404).json({ status: 'error', message: 'Certificate not found' });
+    }
+
+    const studentName = cert.student
+      ? `${cert.student.firstName || ''} ${cert.student.lastName || ''}`.trim()
+      : 'Unknown Student';
+
+    const result = await certificatePdfGenerator.generatePdf({
+      studentName,
+      courseTitle: cert.course?.title ?? 'Unknown Course',
+      instructor: cert.course?.instructor ?? 'Unknown Instructor',
+      issuedAt: cert.issuedAt.toISOString(),
+      certificateId: cert.id,
+      grade: cert.grade ?? undefined,
+    });
+
+    const filename = `certificate-${cert.id}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Certificate-Signature', result.signature);
+    res.setHeader('X-Certificate-Public-Key', result.publicKeyHex);
+    res.setHeader('X-Certificate-SHA256', result.sha256);
+    return res.send(Buffer.from(result.pdfBytes));
+  } catch (error) {
+    logger.error('[CertificatesRoutes] PDF download failed', { error });
+    return res.status(500).json({ status: 'error', message: 'PDF generation failed' });
+  }
+});
 
 /**
  * Certificate Routes
@@ -454,5 +510,202 @@ router.get('/:id/image', certificateController.getCertificateImage.bind(certific
  *               $ref: '#/components/schemas/Error'
  */
 router.get('/:id/qr', certificateController.getQRCode.bind(certificateController));
+
+/**
+ * @openapi
+ * /api/v1/certificates/merkle/anchor:
+ *   post:
+ *     summary: Anchor cohort Merkle root
+ *     description: Anchors a Merkle root hash for a graduation cohort on-chain.
+ *     tags: [Certificates]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [cohortId, rootHash]
+ *             properties:
+ *               cohortId:
+ *                 type: string
+ *               rootHash:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Merkle root anchored
+ *       400:
+ *         description: Invalid request body
+ *       401:
+ *         description: Missing or invalid authentication token
+ */
+router.post(
+  '/merkle/anchor',
+  validate(AnchorMerkleCohortSchema),
+  certificateController.anchorMerkleCohort.bind(certificateController)
+);
+
+/**
+ * @openapi
+ * /api/v1/certificates/merkle/verify:
+ *   post:
+ *     summary: Verify Merkle inclusion proof
+ *     description: Validates a leaf hash against an anchored cohort Merkle root using inclusion proof.
+ *     tags: [Certificates]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [cohortId, leafHash, proof]
+ *             properties:
+ *               cohortId:
+ *                 type: string
+ *               leafHash:
+ *                 type: string
+ *               proof:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *     responses:
+ *       200:
+ *         description: Inclusion proof verification result
+ *       400:
+ *         description: Invalid request body
+ */
+router.post(
+  '/merkle/verify',
+  validate(VerifyMerkleInclusionSchema),
+  certificateController.verifyMerkleInclusion.bind(certificateController)
+);
+
+/**
+ * @openapi
+ * /api/v1/certificates/{id}/openbadges:
+ *   get:
+ *     summary: Export OpenBadges v3.0 JSON-LD
+ *     description: Returns an OpenBadges v3.0 compliant JSON-LD credential package.
+ *     tags: [Certificates]
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: format
+ *         schema:
+ *           type: string
+ *           enum: [json-ld, assertion]
+ *         description: Export format
+ *     responses:
+ *       200:
+ *         description: OpenBadges v3.0 JSON-LD package
+ *         content:
+ *           application/ld+json:
+ *             schema:
+ *               type: object
+ *       404:
+ *         description: Certificate not found
+ */
+router.get('/:id/openbadges', certificateController.exportOpenBadges.bind(certificateController));
+
+/**
+ * @openapi
+ * /api/v1/certificates/{id}/vc:
+ *   get:
+ *     summary: Issue a W3C Verifiable Credential v2.0
+ *     description: Returns a signed W3C VC v2.0 course-completion credential (Ed25519Signature2020).
+ *     tags: [Certificates]
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: W3C Verifiable Credential v2.0 (JSON-LD)
+ *         content:
+ *           application/ld+json:
+ *             schema:
+ *               type: object
+ *       404:
+ *         description: Certificate not found
+ */
+router.get('/:id/vc', certificateController.issueVerifiableCredential.bind(certificateController));
+
+/**
+ * @openapi
+ * /api/v1/certificates/{id}/vc/download:
+ *   get:
+ *     summary: Download a W3C Verifiable Credential v2.0 package
+ *     description: Downloads the signed VC as an attachment for wallet import.
+ *     tags: [Certificates]
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: W3C Verifiable Credential package (attachment)
+ *       404:
+ *         description: Certificate not found
+ */
+router.get(
+  '/:id/vc/download',
+  certificateController.downloadVerifiableCredential.bind(certificateController)
+);
+
+/**
+ * @openapi
+ * /api/v1/certificates/vc/issuer:
+ *   get:
+ *     summary: Issuer DID document
+ *     description: Returns the JSON-LD DID document of the credential issuer with the Ed25519 verification key.
+ *     tags: [Certificates]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Issuer DID document (JSON-LD)
+ */
+router.get('/vc/issuer', certificateController.getVcIssuerDidDocument.bind(certificateController));
+
+/**
+ * @openapi
+ * /api/v1/certificates/vc/verify:
+ *   post:
+ *     summary: Verify a W3C Verifiable Credential
+ *     description: Resolves the issuer DID, verifies the Ed25519Signature2020 proof, and rejects tampered/forged/revoked credentials.
+ *     tags: [Certificates]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [credential]
+ *             properties:
+ *               credential:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Credential verified
+ *       422:
+ *         description: Verification failed (tampered / forged / revoked)
+ */
+router.post(
+  '/vc/verify',
+  certificateController.verifyVerifiableCredential.bind(certificateController)
+);
 
 export default router;

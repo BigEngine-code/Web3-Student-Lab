@@ -19,6 +19,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import winston, { format } from 'winston';
+import { redactSensitiveData, sanitizeString } from './logSanitizer.js';
 
 // ─── Async context store ────────────────────────────────────────────────────
 
@@ -76,13 +77,28 @@ const traceIdFormat = format((info) => {
   return info;
 })();
 
+const sanitizeFormat = format((info) => {
+  for (const key of Object.keys(info)) {
+    // Keep structural fields untouched; sanitize everything else — including
+    // `message` and `stack` — so secrets/PII never reach log output (#1425).
+    if (['level', 'timestamp', 'traceId', 'symbol'].includes(key)) {
+      continue;
+    }
+    const value = info[key];
+    info[key] = typeof value === 'string' ? sanitizeString(value) : redactSensitiveData(value);
+  }
+  return info;
+})();
+
 /**
  * Human-readable console format used in development.
  */
 const consoleLogFormat = printf(({ level, message, timestamp, traceId, stack, ...meta }) => {
   const prefix = traceId ? `[${traceId}] ` : '';
-  const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : '';
-  return `${timestamp} ${prefix}${level}: ${stack || message}${metaStr}`;
+  const sanitizedMeta = redactSensitiveData(meta);
+  const metaStr = sanitizedMeta && typeof sanitizedMeta === 'object' && Object.keys(sanitizedMeta as object).length > 0 ? ` ${JSON.stringify(sanitizedMeta)}` : '';
+  const text = sanitizeString(String(stack || message || ''));
+  return `${timestamp} ${prefix}${level}: ${text}${metaStr}`;
 });
 
 /**
@@ -93,6 +109,7 @@ const structuredLogFormat = combine(
   timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
   errors({ stack: true }),
   traceIdFormat,
+  sanitizeFormat,
   metadata({ fillExcept: ['message', 'level', 'timestamp', 'traceId'] }),
   json()
 );
@@ -141,6 +158,7 @@ const logger = winston.createLogger({
         colorize(),
         timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
         errors({ stack: true }),
+        sanitizeFormat,
         consoleLogFormat
       ),
     }),
@@ -156,6 +174,7 @@ const logger = winston.createLogger({
         colorize(),
         timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
         errors({ stack: true }),
+        sanitizeFormat,
         consoleLogFormat
       ),
     }),
@@ -172,6 +191,7 @@ export const auditLogger = winston.createLogger({
   format: combine(
     timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
     traceIdFormat,
+    sanitizeFormat,
     json()
   ),
   defaultMeta: {

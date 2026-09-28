@@ -24,6 +24,10 @@ model Student {
   githubUsername    String?
   githubAvatarUrl   String?
   githubAccessToken String?
+  // Additive nullable column (zero-downtime expand phase, #1426 / BE-HARD-35)
+  profileTag        String?
+  discordId         String?  @unique
+  discordUsername   String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -34,14 +38,34 @@ model Student {
   canvases         Canvas[]
   ideas            Idea[]
   votes            Vote[]
+  passkeyCredentials PasskeyCredential[]
   hashSimulations  HashSimulation[]
+  subscriptions    Subscription[]
 
   @@index([workspaceId, email])
   @@index([firstName, lastName])
   @@index([email])
   @@index([createdAt])
   @@index([githubId])
+  @@index([discordId])
   @@map("students")
+}
+
+model PasskeyCredential {
+  id           String    @id @default(cuid())
+  credentialId String    @unique
+  publicKeyX   String
+  publicKeyY   String
+  signCount    Int       @default(0)
+  userId       String
+  deviceName   String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  student      Student   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkey_credentials")
 }
 
 model OAuthState {
@@ -132,6 +156,16 @@ model CertificateVerificationEvent {
   @@map("certificate_verification_events")
 }
 
+model MerkleCohortRoot {
+  cohortId   String   @id
+  rootHash   String
+  anchoredAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([cohortId])
+  @@map("merkle_cohort_roots")
+}
+
 model Enrollment {
   id          String   @id @default(cuid())
   workspaceId String   @default("default")
@@ -203,8 +237,10 @@ model AuditLog {
   details     Json?
   ipAddress   String?
   userAgent   String?
+  prevHash    String?
   createdAt   DateTime @default(now())
 
+  @@index([createdAt])
   @@map("audit_logs")
 }
 
@@ -484,4 +520,95 @@ model BridgeEvent {
   @@unique([chain, eventId])
   @@index([processedBlockId])
   @@map("bridge_events")
+}
+
+model ContributorProof {
+  id            String   @id @default(cuid())
+  workspaceId   String   @default("default")
+  did           String
+  walletAddress String
+  githubHandle  String
+  proofHash     String   @unique
+  documentId    String?
+  versionId     String?
+  createdAt     DateTime @default(now())
+
+  @@index([did])
+  @@index([proofHash])
+  @@index([workspaceId, createdAt])
+  @@map("contributor_proofs")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  walletAddress String   @unique @map("wallet_address")
+  nonce         String
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([walletAddress], map: "idx_users_wallet_address")
+  @@map("users")
+}
+
+model PayoutTransaction {
+  id             String    @id @default(uuid())
+  anchorId       String    @map("anchor_id")
+  status         String    // ESCROWED, SETTLED, FAILED
+  escrowedAt     DateTime  @default(now()) @map("escrowed_at")
+  settledAt      DateTime? @map("settled_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([anchorId, status], map: "idx_payout_anchor_status")
+  @@map("v2_payout_transactions")
+}
+
+model SubscriptionPlan {
+  id                String         @id @default(cuid())
+  name              String
+  description       String?
+  priceXLM          Float
+  billingPeriodDays Int            @default(30)
+  features          Json?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  subscriptions     Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id                 String           @id @default(cuid())
+  studentId          String
+  planId             String
+  status             String           @default("active") // active, cancelled, expired
+  currentPeriodStart DateTime         @default(now())
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean          @default(false)
+  txHash             String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  student            Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  plan               SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  payments           PaymentRecord[]
+
+  @@index([studentId])
+  @@index([planId])
+  @@map("subscriptions")
+}
+
+model PaymentRecord {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  amountXLM      Float
+  txHash         String?
+  status         String       @default("completed")
+  paidAt         DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("payment_records")
 }

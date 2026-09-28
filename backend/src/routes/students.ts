@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { normalizeSorobanDid, DidValidationError, validateStudentDidCompatibility } from '../auth/auth.service.js';
+
 import { invalidateUserCache } from '../cache/CacheInvalidation.js';
 import { cacheMiddleware } from '../cache/CacheMiddleware.js';
 import { CACHE_KEYS } from '../cache/CacheService.js';
@@ -65,7 +66,7 @@ router.get('/', async (_req: Request, res: Response): Promise<void> => {
         certificates: true,
       },
     });
-    res.json(students);
+    res.json(students.map(({ password, githubAccessToken, ...student }) => student));
   } catch (error) {
     logger.error('Failed to fetch students', { error });
     res.status(500).json({ error: 'Failed to fetch students' });
@@ -101,7 +102,8 @@ router.get(
         return;
       }
 
-      res.json(student);
+      const { password, githubAccessToken, ...publicStudent } = student;
+      res.json(publicStudent);
     } catch (error) {
       logger.error('Failed to fetch student', {
         error,
@@ -125,6 +127,7 @@ router.post(
       const normalizedDid = validateStudentDidCompatibility({
         did,
         expectedNetwork: process.env.STELLAR_NETWORK || 'testnet',
+
       });
 
       const student = await prisma.student.create({
@@ -146,17 +149,23 @@ router.post(
 
       res.status(201).json(student);
     } catch (error) {
-      if (error instanceof DidValidationError) {
+      if (
+        (error instanceof DidValidationError) ||
+        (error instanceof Error && error.message.startsWith('Invalid DID format'))
+      ) {
+        const message = error instanceof Error ? error.message : 'Invalid DID format';
         logger.warn('Rejected student creation due to DID validation failure', {
           route: '/api/v1/students',
           email: req.body?.email,
-          reason: error.message,
+          reason: message,
         });
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: message });
         return;
       }
 
-      console.error("CREATE STUDENT ERROR:", error);
+      logger.error('Failed to create student', {
+        error: error instanceof Error ? error.message : error,
+      });
       res.status(500).json({ error: 'Failed to create student' });
     }
   }
@@ -246,6 +255,7 @@ router.delete(
         return;
       }
       const { id } = paramResult.data;
+
 
       await prisma.student.delete({ where: { id } });
       await invalidateUserCache(id);

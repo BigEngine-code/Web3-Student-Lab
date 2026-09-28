@@ -1,5 +1,6 @@
 export { Alert } from './Alert';
 export { Badge } from './Badge';
+export { CopyToClipboard } from './CopyToClipboard';
 export { BookmarkButton } from './BookmarkButton';
 export { Button } from './Button';
 export { Card } from './Card';

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+
 import { cacheMiddleware } from '../cache/CacheMiddleware.js';
 import { invalidateAllCourses, invalidateCourseCache } from '../cache/CacheInvalidation.js';
 import { cacheTTL } from '../config/redis.config.js';
@@ -7,6 +8,7 @@ import { auditAction } from '../middleware/audit.js';
 import { createNotification } from '../notifications/index.js';
 import { getQueryString } from '../utils/queryParams.js';
 import logger from '../utils/logger.js';
+
 
 
 const router: ReturnType<typeof Router> = Router();
@@ -21,8 +23,19 @@ type CourseView = {
   updatedAt: string;
 };
 
+interface MockCourse {
+  id: string;
+  title: string;
+  description: string | null;
+  instructor: string;
+  credits: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Robust Mock Database for 100% Demo Uptime
 let courses: CourseView[] = [
+
 
   {
     id: 'cm1yxxxx-intro',
@@ -79,31 +92,27 @@ function toCourseView(course: {
 }
 
 async function ensureSeedCourses() {
-  try {
-    const count = await prisma.course.count();
-    if (count > 0) {
-      const persistedCourses = await prisma.course.findMany({
-        orderBy: {
-          createdAt: 'asc',
-        },
-      });
-      courses = persistedCourses.map(toCourseView);
-      return courses;
-    }
+  const count = await prisma.course.count();
+  if (count > 0) {
+    const persistedCourses = await prisma.course.findMany({
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+    courses = persistedCourses.map(toCourseView);
+    return courses;
+  }
 
-    for (const course of courses) {
-      await prisma.course.create({
-        data: {
-          id: course.id,
-          title: course.title,
-          description: course.description,
-          instructor: course.instructor,
-          credits: course.credits,
-        },
-      });
-    }
-  } catch (error) {
-    logger.error('Failed to seed courses', { error });
+  for (const course of courses) {
+    await prisma.course.create({
+      data: {
+        id: course.id,
+        title: course.title,
+        description: course.description,
+        instructor: course.instructor,
+        credits: course.credits,
+      },
+    });
   }
 }
 
@@ -135,6 +144,7 @@ router.get('/', cacheMiddleware({ ttl: cacheTTL.courses.list }), async (_req, re
       dataSource: 'demo',
       message: 'Live course data is temporarily unavailable. Showing demo data.',
     });
+
   }
 });
 
@@ -295,13 +305,10 @@ router.delete('/:id', auditAction('DELETE_COURSE', 'Course'), async (req, res) =
     return res.status(400).json({ error: 'Course id is required' });
   }
   try {
-    const id = getQueryString(req.params.id);
-
     courses = courses.filter((c) => c.id !== id);
     await prisma.course.delete({
       where: { id },
     });
-
 
     await invalidateCourseCache(id);
     res.status(204).send();

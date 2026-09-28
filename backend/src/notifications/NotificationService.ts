@@ -1,4 +1,5 @@
 import redisClient from '../cache/RedisClient.js';
+
 import logger from '../utils/logger.js';
 import {
     CourseNotification,
@@ -111,6 +112,7 @@ export function markAsRead(notificationId: string): boolean {
     const target = idx === -1 ? undefined : notifications[idx];
     if (target) {
       notifications[idx] = { ...target, read: true };
+
       return true;
     }
   }
@@ -133,6 +135,7 @@ export function markAllAsRead(userId: string): number {
         const current = notifs[i];
         if (current && !current.read) {
           notifs[i] = { ...current, read: true };
+
           count++;
         }
       }
@@ -172,6 +175,7 @@ function mergeSorted(
     } else {
       j++;
       result.push(right);
+
     }
   }
   return result;

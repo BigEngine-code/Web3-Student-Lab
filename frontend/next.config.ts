@@ -1,102 +1,21 @@
 import type { NextConfig } from 'next';
 import path from 'path';
-import { cspDirectivesToString, getCSPConfig } from './src/lib/security/csp-config';
 
-// Conditionally require bundle analyzer when ANALYZE environment variable is enabled
 const withBundleAnalyzer = process.env.ANALYZE === 'true'
   ? require('@next/bundle-analyzer')({ enabled: true })
   : (config: NextConfig) => config;
 
 const nextConfig: NextConfig = {
-  // Keep tracing rooted at frontend/ so parent orphan lockfiles are ignored
-  outputFileTracingRoot: path.join(__dirname),
+  outputFileTracingRoot: path.join(__dirname, '../'),
   reactCompiler: true,
-  // Ensure recharts/monaco editor packages resolve from frontend node_modules only
   transpilePackages: ['recharts'],
 
-  // Content Security Policy with nonce-based script loading
-  async headers() {
-    const cspConfig = getCSPConfig();
-    const cspValue = cspDirectivesToString(cspConfig.directives);
-    const headerKey = cspConfig.reportOnly ? 'Content-Security-Policy-Report-Only' : 'Content-Security-Policy';
-
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          {
-            key: headerKey,
-            value: cspValue,
-          },
-          {
-            key: 'X-Content-Type-Options',
-            value: 'nosniff',
-          },
-          {
-            key: 'X-Frame-Options',
-            value: 'DENY',
-          },
-          {
-            key: 'X-XSS-Protection',
-            value: '1; mode=block',
-          },
-          {
-            key: 'Referrer-Policy',
-            value: 'strict-origin-when-cross-origin',
-          },
-          {
-            key: 'Permissions-Policy',
-            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=()',
-          },
-          {
-            key: 'Strict-Transport-Security',
-            value: 'max-age=31536000; includeSubDomains; preload',
-          },
-
-          {
-            key: 'Cross-Origin-Opener-Policy',
-            value: 'same-origin',
-          },
-        ],
-      },
-    ];
-  },
-
-  // Bundle optimization and tree-shaking configuration
   webpack: (config, { buildId, dev, isServer, defaultLoaders, webpack }) => {
-    // Prefer frontend node_modules so webpack does not climb into an orphaned root lockfile tree
     config.resolve.modules = [
       path.join(__dirname, 'node_modules'),
       ...(Array.isArray(config.resolve.modules) ? config.resolve.modules : ['node_modules']),
     ];
-    config.resolve.alias = {
-      ...config.resolve.alias,
-    };
 
-    // Enable Module Federation host/remote configuration for micro-frontends
-    config.plugins.push(
-      new webpack.container.ModuleFederationPlugin({
-        name: 'frontend_host',
-        filename: 'remoteEntry.js',
-        exposes: {
-          './SharedUi': './src/microfrontends/shared/index.tsx',
-          './LabRemote': './src/microfrontends/remote/LabRemoteModule.tsx',
-        },
-        remotes: {
-          lab_remote: 'lab_remote@http://localhost:3000/remoteEntry.js',
-        },
-        /* shared: {
-          react: { singleton: true, eager: false, requiredVersion: false },
-          'react-dom': { singleton: true, eager: false, requiredVersion: false },
-          zustand: { singleton: true, eager: false, requiredVersion: false },
-          d3: { singleton: true, eager: false, requiredVersion: false },
-          axios: { singleton: true, eager: false, requiredVersion: false },
-          '@stellar/stellar-sdk': { singleton: true, eager: false, requiredVersion: false },
-        }, */
-      })
-    );
-
-    // Suppress warnings about async/await in external script modules
     if (config.output) {
       config.output.environment = {
         ...config.output.environment,
@@ -104,7 +23,6 @@ const nextConfig: NextConfig = {
       };
     }
 
-    // Split chunks for better caching
     if (!config.optimization.splitChunks) {
       config.optimization.splitChunks = {};
     }
@@ -141,17 +59,14 @@ const nextConfig: NextConfig = {
 
     return config;
   },
-  // Enable compression
   compress: true,
   typescript: {
     ignoreBuildErrors: true,
   },
-  // Optimize images
   images: {
     formats: ['image/webp', 'image/avif'],
-    minimumCacheTTL: 60 * 60 * 24 * 30, // 30 days
+    minimumCacheTTL: 60 * 60 * 24 * 30,
   },
-  // Experimental features for better performance
   experimental: {
     optimizePackageImports: ['@stellar/stellar-sdk', 'd3', 'lucide-react'],
   },

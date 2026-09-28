@@ -20,6 +20,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithWallet: (providerName: string) => Promise<void>;
   register: (email: string, password: string, firstName: string, lastName: string) => Promise<void>;
   refreshProfileStatus: () => Promise<void>;
   logout: () => void;
@@ -32,13 +33,31 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const PROFILE_STATUS_COOLDOWN_MS = 15_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { publicKey, disconnect } = useWallet();
+  const { publicKey, disconnect, authenticateWithWallet } = useWallet();
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const lastProfileCheckRef = useRef<Map<string, number>>(new Map());
   const profileCheckInFlightRef = useRef<Map<string, Promise<void>>>(new Map());
+
+  const loginWithWallet = async (providerName: string) => {
+    try {
+      setError(null);
+      setIsLoading(true);
+      const res = await authenticateWithWallet(providerName);
+      if (res?.user && res?.token) {
+        setUser(res.user);
+        setToken(res.token);
+      }
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : 'Wallet login failed';
+      setError(msg);
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const refreshProfileStatus = useCallback(async () => {
     if (!publicKey) {
@@ -167,10 +186,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user, publicKey, refreshProfileStatus]);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string, turnstileToken?: string) => {
     try {
       setError(null);
-      const response = await authAPI.login({ email, password });
+      const response = await authAPI.login({ email, password, turnstileToken });
 
       const userObj = response?.user || (response as any)?.data?.user;
       const tokenObj = response?.token || response?.accessToken || (response as any)?.data?.token || (response as any)?.data?.accessToken;
@@ -203,7 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const register = async (email: string, password: string, firstName: string, lastName: string) => {
+  const register = async (email: string, password: string, firstName: string, lastName: string, turnstileToken?: string) => {
     try {
       setError(null);
       const response = await authAPI.register({
@@ -212,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         firstName,
         lastName,
         walletAddress: publicKey || undefined,
+        turnstileToken,
       });
 
       const userObj = response?.user || (response as any)?.data?.user;
@@ -266,6 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user && !!token,
         isLoading,
         login,
+        loginWithWallet,
         register,
         refreshProfileStatus,
         logout,

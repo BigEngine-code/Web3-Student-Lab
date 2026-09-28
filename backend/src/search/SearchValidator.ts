@@ -32,6 +32,7 @@ export class SearchValidator {
         throw new Error(
           `Invalid search options: ${error.issues.map((e) => e.message).join(', ')}`
         );
+
       }
       throw error;
     }
@@ -40,6 +41,7 @@ export class SearchValidator {
   validateSortField(sort: string, allowedFields: string[]): void {
     const field = sort.split(':')[0] ?? '';
     if (!allowedFields.includes(field)) {
+
       throw new Error(`Invalid sort field: ${field}. Allowed fields: ${allowedFields.join(', ')}`);
     }
   }

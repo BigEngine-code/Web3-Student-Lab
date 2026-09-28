@@ -86,12 +86,12 @@ test.describe('wallet authentication journey', () => {
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Every route but "/" is blocked behind WalletGate until a wallet connects.
-    await expect(page.getByRole('heading', { name: /Authentication Required/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Authentication Required|Connect Web3 Wallet/i })).toBeVisible();
 
     await page.getByRole('button', { name: /Dev Mock Wallet/ }).click();
 
     // Once connected, WalletGate renders the real /dashboard page underneath.
-    await expect(page.getByRole('heading', { name: /Authentication Required/i })).not.toBeVisible();
+    await expect(page.getByRole('heading', { name: /Authentication Required|Connect Web3 Wallet/i })).not.toBeVisible();
 
     const storedWallet = await page.evaluate(() => window.localStorage.getItem('stellar_wallet'));
     expect(JSON.parse(storedWallet ?? '{}')).toMatchObject({
@@ -112,7 +112,7 @@ test.describe('wallet authentication journey', () => {
     // The gate stays up — no crash, no silent false "connected" state — and
     // the button recovers to a re-clickable state instead of hanging on
     // "Connecting...".
-    await expect(page.getByRole('heading', { name: /Authentication Required/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Authentication Required|Connect Web3 Wallet/i })).toBeVisible();
     await expect(connectButton).toBeEnabled();
 
     const storedWallet = await page.evaluate(() => window.localStorage.getItem('stellar_wallet'));
@@ -128,7 +128,15 @@ test.describe('protected-route access', () => {
 
     await expect(page.getByRole('heading', { name: /Network Simulator/i })).toBeVisible();
     await expect(page.getByText(/access denied/i)).not.toBeVisible();
-    await expect(page.getByLabel(/sign out/i)).toBeVisible();
+    
+    const isMobile = page.viewportSize()?.width !== undefined && page.viewportSize()!.width < 1280;
+    if (isMobile) {
+      await page.getByRole('button', { name: /open menu/i }).click();
+      await expect(page.getByRole('button', { name: /sign out/i }).first()).toBeVisible();
+      await page.getByRole('button', { name: /close menu/i }).first().evaluate((b: HTMLElement) => b.click());
+    } else {
+      await expect(page.getByLabel(/sign out/i)).toBeVisible();
+    }
   });
 
   test('denies a role-gated route to an authenticated user without the required role', async ({ page }) => {
@@ -164,9 +172,15 @@ test.describe('session recovery and logout', () => {
     const user = { id: 'user-4', email: 'admin@example.com', role: 'administrator' };
     await mockCurrentUser(page, user);
     await loginAs(page, '/simulator', user);
-    await expect(page.getByLabel(/sign out/i)).toBeVisible();
-
-    await page.getByLabel(/sign out/i).click();
+    const isMobile = page.viewportSize()?.width !== undefined && page.viewportSize()!.width < 1280;
+    if (isMobile) {
+      await page.getByRole('button', { name: /open menu/i }).click();
+      await expect(page.getByRole('button', { name: /sign out/i }).first()).toBeVisible();
+      await page.getByRole('button', { name: /sign out/i }).first().evaluate((b: HTMLElement) => b.click());
+    } else {
+      await expect(page.getByLabel(/sign out/i)).toBeVisible();
+      await page.getByLabel(/sign out/i).click();
+    }
 
     await page.waitForURL('**/auth/login');
     const [token, storedUser] = await page.evaluate(() => [

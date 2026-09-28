@@ -6,6 +6,9 @@ module.exports = {
   transform: {
     '^.+\\.(ts|tsx|js)$': ['babel-jest'],
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!.*(sanitize-html|dom|entities|htmlparser2|marked|uuid|@sentry))',
+  ],
   testMatch: ['**/tests/**/*.test.ts'],
   testPathIgnorePatterns: [
     'tests/audit-system.test.ts',
