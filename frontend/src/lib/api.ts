@@ -1,6 +1,7 @@
 import { apiRequestCache } from './api-cache';
 import apiClient from './api-client';
 import { API_BASE_URL } from './api-config';
+import { apiClient as unifiedApiClient } from './api-client';
 
 export interface User {
   id: string;
@@ -102,6 +103,8 @@ export interface ExportSseMessage {
 }
 
 const DEFAULT_CACHE_TTL_MS = 15_000;
+
+export const api = unifiedApiClient;
 
 function normalizeCertificateListResponse(data: unknown): Certificate[] {
   if (Array.isArray(data)) {
@@ -797,8 +800,6 @@ export const exportAPI = {
   },
 };
 
-export const api = apiClient;
-
 export interface ActivityEntry {
   date: string;
   count: number;
@@ -811,6 +812,8 @@ export const activityAPI = {
     return response.data;
   },
 };
+
+export default api;
 
 export interface VestingSchedule {
   id: string;
