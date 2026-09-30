@@ -238,10 +238,10 @@ const advancedMacroCompletions: CompletionTemplate[] = [
   },
   {
     label: '#[contractimpl] with Env',
-    insertText: '#[contractimpl]\nimpl ${1:ContractName} {\n\tpub fn ${2:method_name}(env: Env, ${3:param}: ${4:param_type}) -> ${5:return_type} {\n\t\t$0\n\t}\n}',
+    insertText: '#[contractimpl]\nimpl ${1:ContractName} {\n\tpub fn ${2:method_name}(env: Env, ${3:param}: ${4:param_type}) -> Result<${5:return_type}, Error> {\n\t\t$0\n\t}\n}',
     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-    detail: 'Contract impl with Env parameter',
-    documentation: 'Creates a #[contractimpl] impl block with methods that include Env injection for Soroban v22.',
+    detail: 'Contract impl with Env and error handling',
+    documentation: 'Creates a #[contractimpl] impl block with methods that include Env injection and Result<T, Error> error handling for Soroban v22.',
     kind: 'Snippet',
   },
   {

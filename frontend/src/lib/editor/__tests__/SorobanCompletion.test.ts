@@ -311,6 +311,8 @@ describe('registerSorobanCompletion', () => {
     expect(contractimplEnv).toBeDefined();
     expect(contractimplEnv.insertText).toContain('#[contractimpl]');
     expect(contractimplEnv.insertText).toContain('env: Env');
+    expect(contractimplEnv.insertText).toContain('Result<');
+    expect(contractimplEnv.insertText).toContain(', Error>');
   });
 
   it('should return #[contracterror] enum completion when typing #[contracterror', async () => {
