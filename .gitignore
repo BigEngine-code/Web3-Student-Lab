@@ -239,6 +239,7 @@ backend/dist/
 !eslint.config.mjs
 !commitlint.config.js
 !commitlint.config.cjs
+!frontend/public/sw.js
 
 
 # temp error logs
