@@ -34,6 +34,7 @@ const rawEnvSchema = z.object({
   NEXT_PUBLIC_WS_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   NEXT_PUBLIC_SOROBAN_RPC_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   NEXT_PUBLIC_HORIZON_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
   NEXT_PUBLIC_CERTIFICATE_CONTRACT_ID: z.preprocess(
     emptyToUndefined,
     z.string().regex(CONTRACT_ID_PATTERN, 'must be a valid Soroban contract id (e.g. C...)').optional(),
@@ -48,6 +49,7 @@ export interface PublicEnv {
   wsUrl: string;
   sorobanRpcUrl: string;
   horizonUrl: string;
+  walletConnectProjectId: string | null;
   /** null when no (valid) contract id is configured — dependent features should degrade, not throw. */
   certificateContractId: string | null;
   webrtcIceServers: string | undefined;
@@ -109,6 +111,7 @@ export function validatePublicEnv(source: NodeJS.ProcessEnv = process.env): EnvV
       (production ? 'wss://web3-student-lab.onrender.com' : DEV_WS_URL),
     sorobanRpcUrl: data.NEXT_PUBLIC_SOROBAN_RPC_URL ?? DEFAULT_SOROBAN_RPC_URL,
     horizonUrl: data.NEXT_PUBLIC_HORIZON_URL ?? DEFAULT_HORIZON_URL,
+    walletConnectProjectId: data.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? null,
     certificateContractId: data.NEXT_PUBLIC_CERTIFICATE_CONTRACT_ID ?? null,
     webrtcIceServers: data.NEXT_PUBLIC_WEBRTC_ICE_SERVERS,
     appVersion: data.NEXT_PUBLIC_APP_VERSION ?? 'dev',

@@ -1,6 +1,6 @@
 'use client';
 
-import { useWallet, WALLET_PROVIDERS } from '@/contexts/WalletContext';
+import { useWallet } from '@/contexts/WalletContext';
 import { CheckCircle2, Copy, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -19,7 +19,16 @@ export function WalletConnectCard({
   connectedDescription = 'Your wallet is ready. You can continue to the next step.',
   className = '',
 }: WalletConnectCardProps) {
-  const { publicKey, activeWallet, isConnecting, error, connect, disconnect } = useWallet();
+  const {
+    publicKey,
+    activeWallet,
+    isConnecting,
+    error,
+    connect,
+    disconnect,
+    availableWallets,
+    detectedWallets,
+  } = useWallet();
   const [localError, setLocalError] = useState<string | null>(null);
   const [, setRefreshTick] = useState(0);
 
@@ -99,18 +108,10 @@ export function WalletConnectCard({
         </div>
       ) : (
         <div className="space-y-3">
-          {WALLET_PROVIDERS.map((wallet) => {
-            const isInstalled = wallet.isInstalled();
-            const statusText =
-              wallet.name === 'Freighter'
-                ? isInstalled
-                  ? 'Ready to connect'
-                  : 'Click to detect extension'
-                : isInstalled
-                  ? 'Ready to connect'
-                  : 'Install required';
-            const statusClass =
-              wallet.name === 'Freighter' || isInstalled ? 'text-emerald-400' : 'text-gray-500';
+          {availableWallets.map((wallet) => {
+            const isInstalled = detectedWallets.some((detected) => detected.id === wallet.id);
+            const statusText = isInstalled ? 'Ready to connect' : 'Not detected';
+            const statusClass = isInstalled ? 'text-emerald-400' : 'text-gray-500';
 
             return (
               <button
@@ -126,7 +127,7 @@ export function WalletConnectCard({
                     <p className="text-sm font-bold uppercase tracking-[0.14em] text-white">
                       {wallet.name}
                     </p>
-                    {wallet.name === 'Freighter' && (
+                    {wallet.recommended && isInstalled && (
                       <span className="text-[10px] bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
                         Recommended
                       </span>

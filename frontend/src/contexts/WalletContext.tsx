@@ -1,19 +1,14 @@
 'use client';
 
+import { authAPI } from '@/lib/api';
+import { getPublicEnv } from '@/lib/env';
 import {
-  getAddress as getFreighterAddress,
-  isConnected as isFreighterConnected,
-  requestAccess as requestFreighterAccess,
-  signTransaction as signFreighterTransaction,
-} from '@stellar/freighter-api';
+    web3TransactionMachine,
+    type Web3TransactionContext,
+    type Web3TransactionStatus,
+} from '@/lib/web3/transactionMachine';
 import { useMachine } from '@xstate/react';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import {
-  web3TransactionMachine,
-  type Web3TransactionContext,
-  type Web3TransactionStatus,
-} from '@/lib/web3/transactionMachine';
-import { authAPI } from '@/lib/api';
 
 export type StellarNetwork = 'PUBLIC' | 'TESTNET' | 'FUTURENET';
 
@@ -25,15 +20,17 @@ export const NETWORK_PASSPHRASES: Record<StellarNetwork, string> = {
 
 export interface WalletProvider {
   id: string;
+  kitId?: string;
   name: string;
+  recommended?: boolean;
   icon: string;
   downloadUrl: string;
   description: string;
   isInstalled: () => boolean;
-  connect: () => Promise<string>;
-  disconnect: () => Promise<void>;
-  getPublicKey: () => Promise<string | null>;
-  getNetwork?: () => Promise<StellarNetwork | string | null>;
+  connect: (network?: StellarNetwork) => Promise<string>;
+  disconnect: (network?: StellarNetwork) => Promise<void>;
+  getPublicKey: (network?: StellarNetwork) => Promise<string | null>;
+  getNetwork?: (network?: StellarNetwork) => Promise<StellarNetwork | string | null>;
   switchNetwork?: (network: StellarNetwork) => Promise<boolean>;
   signTransaction: (xdr: string, opts?: { networkPassphrase?: string }) => Promise<string>;
   onAccountChange?: (cb: (pk: string | null) => void) => () => void;
@@ -118,248 +115,192 @@ const resolveInjectedFreighter = () =>
     ? null
     : window.freighterApi || window.freighter || window.stellar?.freighter || null;
 
-const freighterAdapter: WalletProvider = {
+const KIT_NETWORKS: Record<StellarNetwork, KitNetwork> = {
+  PUBLIC: KitNetwork.PUBLIC,
+  TESTNET: KitNetwork.TESTNET,
+  FUTURENET: KitNetwork.FUTURENET,
+};
+
+interface WalletKitState {
+  kit: StellarWalletsKit;
+  walletConnect: WalletConnectModule | null;
+}
+
+const walletKits = new Map<StellarNetwork, WalletKitState>();
+
+function getWalletKit(network: StellarNetwork): WalletKitState {
+  const cached = walletKits.get(network);
+  if (cached) return cached;
+
+  const modules: ModuleInterface[] = [
+    new FreighterModule(),
+    new AlbedoModule(),
+    new RabetModule(),
+    new HanaModule(),
+    new xBullModule(),
+  ];
+  const projectId = getPublicEnv().walletConnectProjectId;
+  let walletConnect: WalletConnectModule | null = null;
+
+  if (projectId && network !== 'FUTURENET') {
+    walletConnect = new WalletConnectModule({
+      projectId,
+      name: 'Web3 Student Lab',
+      description: 'Connect a Stellar wallet to Web3 Student Lab.',
+      url: typeof window === 'undefined' ? 'https://web3studentlab.org' : window.location.origin,
+      icons: [],
+      method: WalletConnectAllowedMethods.SIGN,
+      network: KIT_NETWORKS[network],
+    });
+    modules.push(walletConnect);
+  }
+
+  const state = {
+    kit: new StellarWalletsKit({
+      network: KIT_NETWORKS[network],
+      selectedWalletId: FREIGHTER_ID,
+      modules,
+    }),
+    walletConnect,
+  };
+  walletKits.set(network, state);
+  return state;
+}
+
+function getWalletProvider(
+  options: Omit<WalletProvider, 'connect' | 'disconnect' | 'getPublicKey' | 'getNetwork' | 'signTransaction' | 'switchNetwork'> & {
+    kitId: string;
+  }
+): WalletProvider {
+  const useKit = async (network: StellarNetwork, action: (kit: StellarWalletsKit) => Promise<void>) => {
+    const { kit } = getWalletKit(network);
+    kit.setWallet(options.kitId);
+    await action(kit);
+  };
+
+  return {
+    ...options,
+    connect: async (network = 'TESTNET') => {
+      let address = '';
+      await useKit(network, async (kit) => {
+        address = (await kit.getAddress()).address;
+      });
+      if (!address) throw new Error(`${options.name} did not return an account.`);
+      return address;
+    },
+    disconnect: async (network = 'TESTNET') => {
+      const state = getWalletKit(network);
+      if (options.kitId === WALLET_CONNECT_ID) await state.walletConnect?.disconnect();
+      await state.kit.disconnect();
+    },
+    getPublicKey: async (network = 'TESTNET') => {
+      try {
+        let address: string | null = null;
+        await useKit(network, async (kit) => {
+          address = (await kit.getAddress()).address;
+        });
+        return address;
+      } catch {
+        return null;
+      }
+    },
+    getNetwork: async (network = 'TESTNET') => {
+      let networkPassphrase: string | null = null;
+      await useKit(network, async (kit) => {
+        networkPassphrase = (await kit.getNetwork()).networkPassphrase;
+      });
+      return networkPassphrase;
+    },
+    switchNetwork:
+      options.id === 'freighter'
+        ? async (network) => {
+            const injected = resolveInjectedFreighter();
+            if (!injected?.setNetwork) return false;
+            try {
+              return await injected.setNetwork(network);
+            } catch {
+              return false;
+            }
+          }
+        : undefined,
+    signTransaction: async (xdr, opts) => {
+      const network =
+        (Object.entries(NETWORK_PASSPHRASES).find(([, passphrase]) =>
+          opts?.networkPassphrase?.includes(passphrase)
+        )?.[0] as StellarNetwork | undefined) ?? 'TESTNET';
+      let signedXdr = '';
+      await useKit(network, async (kit) => {
+        signedXdr = (await kit.signTransaction(xdr, opts)).signedTxXdr;
+      });
+      if (!signedXdr) throw new Error(`${options.name} did not return a signed transaction.`);
+      return signedXdr;
+    },
+  };
+}
+
+const freighterAdapter = getWalletProvider({
   id: 'freighter',
+  kitId: FREIGHTER_ID,
   name: 'Freighter',
+  recommended: true,
   icon: '🚀',
   downloadUrl: 'https://www.freighter.app',
   description: 'Browser extension wallet for the Stellar network.',
   isInstalled: () =>
     typeof window !== 'undefined' &&
     (!!window.freighter || !!window.freighterApi || !!window.stellar?.freighter),
-  connect: async () => {
-    let access;
-    try {
-      access = await requestFreighterAccess();
-    } catch (e) {
-      throw new Error('Failed to request access from Freighter. Make sure the extension is unlocked and enabled for this site.');
-    }
-    
-    if (!access || access.error || !access.address) {
-      throw new Error(access?.error || 'Freighter did not return an address. Please unlock your wallet and try again.');
-    }
+});
 
-    return access.address;
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    const injected = resolveInjectedFreighter();
-    if (injected?.getAddress) {
-      const injectedAddress = await injected.getAddress();
-      return injectedAddress.error || !injectedAddress.address ? null : injectedAddress.address;
-    }
-    if (injected?.getPublicKey) {
-      return injected.getPublicKey();
-    }
-
-    const address = await getFreighterAddress();
-    if (address.error || !address.address) {
-      return null;
-    }
-
-    return address.address;
-  },
-  getNetwork: async () => {
-    const injected = resolveInjectedFreighter();
-    if (injected?.getNetwork) {
-      try {
-        const net = await injected.getNetwork();
-        const upper = net.toUpperCase();
-        if (upper.includes('PUBLIC') || upper.includes('MAIN')) return 'PUBLIC';
-        if (upper.includes('FUTURE')) return 'FUTURENET';
-        return 'TESTNET';
-      } catch {
-        return 'TESTNET';
-      }
-    }
-    return 'TESTNET';
-  },
-  switchNetwork: async (network: StellarNetwork) => {
-    if (window.freighter?.setNetwork) {
-      try {
-        return await window.freighter.setNetwork(network);
-      } catch {
-        return false;
-      }
-    }
-    return false;
-  },
-  signTransaction: async (xdr: string, opts?: { networkPassphrase?: string }) => {
-    const injected = resolveInjectedFreighter();
-    if (injected?.signTransaction) {
-      const result = await injected.signTransaction(xdr, opts);
-      if (typeof result === 'string') {
-        return result;
-      }
-      if (result.error || !result.signedTxXdr) {
-        throw new Error(result.error || 'Freighter could not sign the transaction');
-      }
-      return result.signedTxXdr;
-    }
-
-    const result = await signFreighterTransaction(xdr, opts);
-    if (result.error || !result.signedTxXdr) {
-      throw new Error(result.error || 'Freighter could not sign the transaction');
-    }
-
-    return result.signedTxXdr;
-  },
-};
-
-const albedoAdapter: WalletProvider = {
+const albedoAdapter = getWalletProvider({
   id: 'albedo',
+  kitId: ALBEDO_ID,
   name: 'Albedo',
   icon: '🌐',
   downloadUrl: 'https://albedo.link',
   description: 'Web-based delegated signing key management for Stellar.',
-  isInstalled: () => true,
-  connect: async () => {
-    if (!window.albedo) throw new Error('Albedo not available');
-    const res = await window.albedo.publicKey({});
-    return res.pubkey;
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    if (!window.albedo) return null;
-    try {
-      const res = await window.albedo.publicKey({});
-      return res.pubkey;
-    } catch {
-      return null;
-    }
-  },
-  getNetwork: async () => 'TESTNET',
-  signTransaction: async (xdr: string, opts?: { networkPassphrase?: string }) => {
-    if (!window.albedo) throw new Error('Albedo not available');
-    const net = opts?.networkPassphrase?.includes('Public') ? 'public' : 'testnet';
-    const res = await window.albedo.tx({ xdr, network: net });
-    return res.signed_envelope_xdr;
-  },
-};
+  isInstalled: () => process.env.NODE_ENV !== 'production',
+});
 
-const rabetAdapter: WalletProvider = {
+const rabetAdapter = getWalletProvider({
   id: 'rabet',
+  kitId: RABET_ID,
   name: 'Rabet',
   icon: '🔷',
   downloadUrl: 'https://rabet.io',
-  description: 'Lightweight browser extension wallet for Stellar.',
+  description: 'Browser extension wallet for Stellar.',
   isInstalled: () => typeof window !== 'undefined' && !!window.rabet,
-  connect: async () => {
-    if (!window.rabet) throw new Error('Rabet not installed');
-    const res = await window.rabet.connect();
-    return res.publicKey;
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    if (!window.rabet) return null;
-    try {
-      const res = await window.rabet.connect();
-      return res.publicKey;
-    } catch {
-      return null;
-    }
-  },
-  getNetwork: async () => 'TESTNET',
-  signTransaction: async (xdr: string, opts?: { networkPassphrase?: string }) => {
-    if (!window.rabet) throw new Error('Rabet not installed');
-    const net = opts?.networkPassphrase?.includes('Public') ? 'PUBLIC' : 'TESTNET';
-    const res = await window.rabet.sign(xdr, net);
-    return res.xdr;
-  },
-};
+});
 
-const hanaAdapter: WalletProvider = {
+const hanaAdapter = getWalletProvider({
   id: 'hana',
+  kitId: HANA_ID,
   name: 'Hana',
   icon: '🌸',
   downloadUrl: 'https://hanawallet.io',
   description: 'Multi-chain non-custodial Web3 wallet extension.',
   isInstalled: () => typeof window !== 'undefined' && (!!window.hana || !!window.stellar?.hana),
-  connect: async () => {
-    const provider = window.hana || window.stellar?.hana;
-    if (!provider) throw new Error('Hana wallet is not installed');
-    const res = await provider.connect();
-    return res.publicKey;
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    const provider = window.hana || window.stellar?.hana;
-    if (!provider) return null;
-    try {
-      return await provider.getPublicKey();
-    } catch {
-      return null;
-    }
-  },
-  getNetwork: async () => 'TESTNET',
-  signTransaction: async (xdr: string) => {
-    const provider = window.hana || window.stellar?.hana;
-    if (!provider) throw new Error('Hana wallet is not installed');
-    return await provider.signTransaction(xdr);
-  },
-};
+});
 
-const xBullAdapter: WalletProvider = {
+const xBullAdapter = getWalletProvider({
   id: 'xbull',
+  kitId: XBULL_ID,
   name: 'xBull',
   icon: '🐂',
   downloadUrl: 'https://xbull.app',
-  description: 'Powerful privacy-focused Stellar extension wallet.',
+  description: 'Stellar wallet extension and mobile app.',
   isInstalled: () => typeof window !== 'undefined' && (!!window.xBull || !!window.xBullSDK),
-  connect: async () => {
-    const provider = window.xBull || window.xBullSDK;
-    if (!provider) throw new Error('xBull wallet is not installed');
-    const res = await provider.connect();
-    return res.publicKey;
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    const provider = window.xBull || window.xBullSDK;
-    if (!provider) return null;
-    try {
-      return await provider.getPublicKey();
-    } catch {
-      return null;
-    }
-  },
-  getNetwork: async () => 'TESTNET',
-  signTransaction: async (xdr: string, opts?: { networkPassphrase?: string }) => {
-    const provider = window.xBull || window.xBullSDK;
-    if (!provider) throw new Error('xBull wallet is not installed');
-    return await provider.sign(xdr, opts);
-  },
-};
+});
 
-const walletConnectAdapter: WalletProvider = {
+const walletConnectAdapter = getWalletProvider({
   id: 'walletconnect',
+  kitId: WALLET_CONNECT_ID,
   name: 'WalletConnect',
   icon: '🔗',
   downloadUrl: 'https://walletconnect.com',
-  description: 'Open protocol connecting mobile wallets with Web3 apps.',
-  isInstalled: () => true,
-  connect: async () => {
-    if (window.walletConnect) {
-      const res = await window.walletConnect.connect();
-      return res.account;
-    }
-    return 'GBRPYHIL2CI3FYQMWVUGE62KMGOBQKLCYJ3HLKBUBIW5VZH4S4MNOWT';
-  },
-  disconnect: async () => {},
-  getPublicKey: async () => {
-    if (window.walletConnect) {
-      const res = await window.walletConnect.connect();
-      return res.account;
-    }
-    return 'GBRPYHIL2CI3FYQMWVUGE62KMGOBQKLCYJ3HLKBUBIW5VZH4S4MNOWT';
-  },
-  getNetwork: async () => 'TESTNET',
-  signTransaction: async (xdr: string) => {
-    if (window.walletConnect) {
-      return await window.walletConnect.sign(xdr);
-    }
-    return xdr;
-  },
-};
+  description: 'Pair a mobile Stellar wallet with a QR code or deep link.',
+  isInstalled: () =>
+    typeof window !== 'undefined' && Boolean(getPublicEnv().walletConnectProjectId),
+});
 
 const mockAdapter: WalletProvider = {
   id: 'mock',
@@ -382,8 +323,16 @@ export const WALLET_PROVIDERS: WalletProvider[] = [
   hanaAdapter,
   xBullAdapter,
   walletConnectAdapter,
-  mockAdapter,
+  ...(process.env.NODE_ENV !== 'production' ? [mockAdapter] : []),
 ];
+
+function findWalletProvider(providerName: string): WalletProvider | undefined {
+  const normalizedName = providerName.trim().toLowerCase();
+  return WALLET_PROVIDERS.find(
+    (provider) =>
+      provider.id.toLowerCase() === normalizedName || provider.name.toLowerCase() === normalizedName
+  );
+}
 
 interface WalletContextType {
   publicKey: string | null;
@@ -428,15 +377,35 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     FUTURENET: '1000.0000000 XLM (Futurenet)',
   });
 
-  const scanWallets = useCallback(() => {
-    const installed = WALLET_PROVIDERS.filter((p) => p.isInstalled());
-    setDetectedWallets(installed);
-  }, []);
+  const scanWallets = useCallback(async () => {
+    const state = getWalletKit(activeNetwork);
+    try {
+      const supportedWallets = await state.kit.getSupportedWallets();
+      const supportedIds = new Set(
+        supportedWallets.filter((wallet) => wallet.isAvailable).map((wallet) => wallet.id)
+      );
+      setDetectedWallets(
+        WALLET_PROVIDERS.filter(
+          (provider) =>
+            (provider.id !== 'walletconnect' || activeNetwork !== 'FUTURENET') &&
+            (provider.isInstalled() || supportedIds.has(provider.kitId ?? provider.id))
+        )
+      );
+    } catch {
+      setDetectedWallets(WALLET_PROVIDERS.filter((provider) => provider.isInstalled()));
+    }
+  }, [activeNetwork]);
 
   useEffect(() => {
     scanWallets();
-    const timer = setInterval(scanWallets, 3000);
-    return () => clearInterval(timer);
+    const timer = setInterval(scanWallets, 1500);
+    window.addEventListener('focus', scanWallets);
+    document.addEventListener('visibilitychange', scanWallets);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', scanWallets);
+      document.removeEventListener('visibilitychange', scanWallets);
+    };
   }, [scanWallets]);
 
   useEffect(() => {
@@ -463,10 +432,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sendTransaction]);
 
-  const updateWalletNetwork = useCallback(async (provider: WalletProvider) => {
+  const updateWalletNetwork = useCallback(async (provider: WalletProvider, network: StellarNetwork) => {
     if (provider.getNetwork) {
       try {
-        const net = await provider.getNetwork();
+        const net = await provider.getNetwork(network);
         if (net && ['PUBLIC', 'TESTNET', 'FUTURENET'].includes(net.toUpperCase())) {
           setWalletNetwork(net.toUpperCase() as StellarNetwork);
         }
@@ -478,18 +447,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const connect = useCallback(
     async (providerName: string) => {
-      const provider = WALLET_PROVIDERS.find(
-        (p) => p.name.toLowerCase() === providerName.toLowerCase() || p.id === providerName
-      );
+      const provider = findWalletProvider(providerName);
       if (!provider) throw new Error(`Unknown wallet: ${providerName}`);
       setIsConnecting(true);
       setError(null);
       sendTransaction({ type: 'CONNECT_WALLET', walletName: provider.name });
       try {
-        const pk = await provider.connect();
+        const pk = await provider.connect(activeNetwork);
         setPublicKey(pk);
         setActiveWallet(provider.name);
-        await updateWalletNetwork(provider);
+        await updateWalletNetwork(provider, activeNetwork);
         localStorage.setItem(
           'stellar_wallet',
           JSON.stringify({ wallet: provider.name, pk, network: activeNetwork })
@@ -509,7 +476,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const authenticateWithWallet = useCallback(
     async (providerName: string) => {
-      const provider = WALLET_PROVIDERS.find((p) => p.name === providerName);
+      const provider = findWalletProvider(providerName);
       if (!provider) throw new Error(`Unknown wallet: ${providerName}`);
 
       setIsConnecting(true);
@@ -517,11 +484,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       sendTransaction({ type: 'CONNECT_WALLET', walletName: providerName });
 
       try {
-        const pk = await provider.connect();
+        const pk = await provider.connect(activeNetwork);
         setPublicKey(pk);
-        setActiveWallet(providerName);
-        localStorage.setItem('stellar_wallet', JSON.stringify({ wallet: providerName, pk }));
-        sendTransaction({ type: 'WALLET_CONNECTED', walletName: providerName, publicKey: pk });
+        setActiveWallet(provider.name);
+        localStorage.setItem(
+          'stellar_wallet',
+          JSON.stringify({ wallet: provider.name, pk, network: activeNetwork })
+        );
+        sendTransaction({ type: 'WALLET_CONNECTED', walletName: provider.name, publicKey: pk });
 
         // 1. Request SEP-0010 Challenge Transaction from Backend
         const challengeRes = await authAPI.getSep10Challenge(pk);
@@ -531,7 +501,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
         // 2. Sign Challenge Transaction with Wallet
         sendTransaction({ type: 'REQUEST_SIGNATURE', transactionXdr: challengeRes.transaction });
-        const signedXdr = await provider.signTransaction(challengeRes.transaction);
+        const signedXdr = await provider.signTransaction(challengeRes.transaction, {
+          networkPassphrase: NETWORK_PASSPHRASES[activeNetwork],
+        });
         sendTransaction({ type: 'SIGNATURE_APPROVED', signedTransactionXdr: signedXdr });
 
         // 3. Submit Signed Challenge to Backend for Verification & Token Issuance
@@ -552,18 +524,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         setIsConnecting(false);
       }
     },
-    [sendTransaction]
+    [activeNetwork, sendTransaction]
   );
 
   const disconnect = useCallback(async () => {
-    const provider = WALLET_PROVIDERS.find((p) => p.name === activeWallet);
-    await provider?.disconnect();
+    const provider = activeWallet ? findWalletProvider(activeWallet) : undefined;
+    await provider?.disconnect(activeNetwork);
     setPublicKey(null);
     setActiveWallet(null);
     setWalletNetwork(null);
     localStorage.removeItem('stellar_wallet');
     sendTransaction({ type: 'DISCONNECT_WALLET' });
-  }, [activeWallet, sendTransaction]);
+  }, [activeNetwork, activeWallet, sendTransaction]);
 
   const setAppNetwork = useCallback((network: StellarNetwork) => {
     setActiveNetwork(network);
@@ -583,7 +555,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const switchNetwork = useCallback(
     async (targetNetwork: StellarNetwork) => {
-      const provider = WALLET_PROVIDERS.find((p) => p.name === activeWallet);
+      const provider = activeWallet ? findWalletProvider(activeWallet) : undefined;
       if (provider?.switchNetwork) {
         const success = await provider.switchNetwork(targetNetwork);
         if (success) {
@@ -605,7 +577,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           `Network mismatch: Application is set to ${activeNetwork} while wallet is connected to ${walletNetwork}. Please switch networks before signing.`
         );
       }
-      const provider = WALLET_PROVIDERS.find((p) => p.name === activeWallet);
+      const provider = activeWallet ? findWalletProvider(activeWallet) : undefined;
       if (!provider) throw new Error('No wallet connected');
       sendTransaction({ type: 'REQUEST_SIGNATURE', transactionXdr: xdr });
       try {
