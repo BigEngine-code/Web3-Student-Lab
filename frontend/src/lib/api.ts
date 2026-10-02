@@ -1,6 +1,7 @@
 import { apiRequestCache } from './api-cache';
 import apiClient from './api-client';
 import { API_BASE_URL } from './api-config';
+import { apiClient as unifiedApiClient } from './api-client';
 
 export interface User {
   id: string;
@@ -17,6 +18,54 @@ export interface AuthResponse {
   user: User;
   token: string;
   accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string | null;
+  expiresIn?: number | null;
+  signers?: unknown[];
+}
+
+export interface AuthSession {
+  user: User | null;
+  token: string | null;
+  accessToken: string | null;
+  refreshToken?: string | null;
+  expiresAt?: string | null;
+  expiresIn?: number | null;
+  signers?: unknown[];
+}
+
+export function normalizeAuthResponse(response: unknown): AuthSession {
+  const payload =
+    response && typeof response === 'object' && 'data' in response && response.data && typeof response.data === 'object'
+      ? (response.data as Record<string, unknown>)
+      : (response as Record<string, unknown> | null) ?? {};
+
+  const user =
+    (payload.user as User | undefined) ??
+    ((payload.data as Record<string, unknown> | undefined)?.user as User | undefined) ??
+    null;
+
+  const accessToken =
+    (payload.accessToken as string | undefined) ??
+    (payload.token as string | undefined) ??
+    ((payload.data as Record<string, unknown> | undefined)?.accessToken as string | undefined) ??
+    ((payload.data as Record<string, unknown> | undefined)?.token as string | undefined) ??
+    null;
+
+  const refreshToken =
+    (payload.refreshToken as string | undefined) ??
+    ((payload.data as Record<string, unknown> | undefined)?.refreshToken as string | undefined) ??
+    null;
+
+  return {
+    user,
+    token: accessToken,
+    accessToken,
+    refreshToken,
+    expiresAt: ((payload.expiresAt as string | undefined) ?? (payload.data as Record<string, unknown> | undefined)?.expiresAt) ?? null,
+    expiresIn: ((payload.expiresIn as number | undefined) ?? (payload.data as Record<string, unknown> | undefined)?.expiresIn) ?? null,
+    signers: ((payload.signers as unknown[]) ?? (payload.data as Record<string, unknown> | undefined)?.signers) ?? [],
+  };
 }
 
 export interface LoginRequest {
@@ -102,6 +151,8 @@ export interface ExportSseMessage {
 }
 
 const DEFAULT_CACHE_TTL_MS = 15_000;
+
+export const api = unifiedApiClient;
 
 function normalizeCertificateListResponse(data: unknown): Certificate[] {
   if (Array.isArray(data)) {
@@ -797,8 +848,6 @@ export const exportAPI = {
   },
 };
 
-export const api = apiClient;
-
 export interface ActivityEntry {
   date: string;
   count: number;
@@ -811,6 +860,8 @@ export const activityAPI = {
     return response.data;
   },
 };
+
+export default api;
 
 export interface VestingSchedule {
   id: string;

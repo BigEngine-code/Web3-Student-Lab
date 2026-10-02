@@ -686,6 +686,7 @@ fn read_reserve_token(env: &Env) -> Address {
 }
 
 #[cfg(test)]
+mod tests;
 mod tests {
     use super::*;
     use soroban_sdk::{
