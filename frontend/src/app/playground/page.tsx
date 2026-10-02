@@ -1,32 +1,33 @@
 'use client';
 
 import { VirtualizedFileTree, type FileTreeNode } from '@/components/explorer/VirtualizedFileTree';
-import { AccessibilityAuditPanel } from '@/components/playground/AccessibilityAuditPanel';
-import { AssistantPanel } from '@/components/playground/AssistantPanel';
-import { ContractSearch } from '@/components/playground/ContractSearch';
-import { DependencyUpdatePanel } from '@/components/playground/DependencyUpdatePanel';
-import { ExecutionStatusBar } from '@/components/playground/ExecutionStatusBar';
-import { RevisionHistoryPanel } from '@/components/playground/RevisionHistoryPanel';
+const PrSimulationPanel = dynamic(() => import('@/components/playground/PrSimulationPanel').then((mod) => mod.PrSimulationPanel), {
+  ssr: false,
+});
 import { OfflineIndicator } from '@/components/storage/OfflineIndicator';
 import {
-    CompileOutputTerminal
+    CompileOutputTerminal,
+    type CompileLogEntry,
 } from '@/components/terminal/CompileOutputTerminal';
 import { TerminalPanel } from '@/components/terminal/TerminalPanel';
 import { WithSkeleton } from '@/components/ui/WithSkeleton';
 import { EditorSkeleton } from '@/components/ui/skeletons/EditorSkeleton';
 import { useTutorial } from '@/contexts/TutorialContext';
-import { useAccessibilityAudit } from '@/hooks/useAccessibilityAudit';
-import { usePlaygroundExecution } from '@/hooks/usePlaygroundExecution';
 import { CollaborationProvider } from '@/lib/collaboration/YjsProvider';
 import { FilePresenceManager } from '@/lib/explorer/FilePresence';
 import { DatabaseManager } from '@/lib/storage/DatabaseManager';
 import { SyncManager } from '@/lib/storage/SyncManager';
 import { Settings, X } from 'lucide-react';
+import BatchComposer from '@/components/playground/BatchComposer';
+import { DependencyUpdatePanel } from '@/components/playground/DependencyUpdatePanel';
+import { AccessibilityAuditPanel } from '@/components/playground/AccessibilityAuditPanel';
+import { ContractSearch } from '@/components/playground/ContractSearch';
+import { ExecutionStatusBar } from '@/components/playground/ExecutionStatusBar';
+import { useAccessibilityAudit } from '@/hooks/useAccessibilityAudit';
+import { usePlaygroundExecution } from '@/hooks/usePlaygroundExecution';
+import { AssistantPanel } from '@/components/playground/AssistantPanel';
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-const PrSimulationPanel = dynamic(() => import('@/components/playground/PrSimulationPanel').then((mod) => mod.PrSimulationPanel), {
-  ssr: false,
-});
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const CodeEditor = dynamic(() => import('@/components/playground/CodeEditor').then((mod) => mod.CodeEditor), {
   ssr: false,
@@ -152,8 +153,6 @@ impl HelloContract {
   const [isOnline, setIsOnline] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
   const [activeTab, setActiveTab] = useState<'editor' | 'output' | 'prsim'>('editor');
-  const [revisionRefreshKey, setRevisionRefreshKey] = useState(0);
-  const [isRestoringDraft, setIsRestoringDraft] = useState(true);
 
   // ── Cancellable execution hook ──────────────────────────────────────────
   const {
@@ -250,101 +249,12 @@ impl HelloContract {
     };
   }, [provider.doc, syncManager]);
 
-  const persistDraft = useCallback(
-    async (path: string, content: string) => {
-      try {
-        localStorage.setItem(`playground:draft:${path}`, content);
-        localStorage.setItem('playground:active-file', path);
-      } catch {
-        // IndexedDB below remains the durable backup if localStorage is unavailable.
-      }
-
-      await databaseManager.setMetadata('playground:active-file', path);
-      const stored = await databaseManager.getFileByPath(path);
-      if (stored?.content === content) return;
-
-      const updatedAt = Date.now();
-      await databaseManager.upsertFile({
-        id: path,
-        path,
-        content,
-        updatedAt,
-        version: (stored?.version ?? 0) + 1,
-      });
-      const revisions = await databaseManager.listRevisions(path);
-      if (revisions[0]?.content !== content) {
-        await databaseManager.createRevision(path, content);
-        setRevisionRefreshKey((current) => current + 1);
-      }
-    },
-    [databaseManager]
-  );
-
-  const selectFile = async (path: string) => {
-    if (path === activeFilePath) return;
-    await persistDraft(activeFilePath, sourceCode).catch(() => {});
-    const stored = await databaseManager.getFileByPath(path).catch(() => null);
-    let localDraft: string | null = null;
-    try {
-      localDraft = localStorage.getItem(`playground:draft:${path}`);
-    } catch {
-      localDraft = null;
-    }
-    await databaseManager.setMetadata('playground:active-file', path).catch(() => {});
-    setSourceCode(localDraft ?? stored?.content ?? '');
-    setActiveFilePath(path);
-  };
-
   useEffect(() => {
-    let active = true;
-    const restoreDraft = async () => {
-      try {
-        let localPath: string | null = null;
-        try {
-          localPath = localStorage.getItem('playground:active-file');
-        } catch {
-          localPath = null;
-        }
-        const storedPath = await databaseManager.getMetadata('playground:active-file');
-        const path = localPath ?? storedPath?.value ?? activeFilePath;
-        const stored = await databaseManager.getFileByPath(path);
-        let localDraft: string | null = null;
-        try {
-          localDraft = localStorage.getItem(`playground:draft:${path}`);
-        } catch {
-          localDraft = null;
-        }
-        if (!active) return;
-        setActiveFilePath(path);
-        if (localDraft !== null) setSourceCode(localDraft);
-        else if (stored) setSourceCode(stored.content);
-      } catch {
-        if (!active) return;
-      }
-      if (active) setIsRestoringDraft(false);
+    const persistActiveFile = async () => {
+      await databaseManager.setMetadata('playground:active-file', activeFilePath);
     };
-
-    void restoreDraft();
-    return () => {
-      active = false;
-    };
+    persistActiveFile();
   }, [activeFilePath, databaseManager]);
-
-  useEffect(() => {
-    if (isRestoringDraft) return;
-
-    try {
-      localStorage.setItem(`playground:draft:${activeFilePath}`, sourceCode);
-      localStorage.setItem('playground:active-file', activeFilePath);
-    } catch {
-      // The debounced IndexedDB save still runs when localStorage is unavailable.
-    }
-
-    const timer = window.setTimeout(() => {
-      void persistDraft(activeFilePath, sourceCode).catch(() => {});
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [activeFilePath, isRestoringDraft, persistDraft, sourceCode]);
 
   const handleCompile = useCallback(() => {
     if (isCompiling) return;
@@ -363,6 +273,16 @@ impl HelloContract {
       document.removeEventListener('playground-compile', handleShortcutCompile as EventListener);
     };
   }, [handleCompile, isCompiling]);
+
+  useEffect(() => {
+    const restoreActiveFile = async () => {
+      const stored = await databaseManager.getMetadata('playground:active-file');
+      if (stored?.value) {
+        setActiveFilePath(stored.value);
+      }
+    };
+    restoreActiveFile();
+  }, [databaseManager]);
 
   return (
     <div className="min-h-[calc(100vh-80px)] bg-black p-6 font-mono text-white md:p-12">
@@ -499,7 +419,7 @@ impl HelloContract {
                 nodes={treeData}
                 activeFilePath={activeFilePath}
                 filePresenceManager={filePresenceManager}
-                onSelectFile={selectFile}
+                onSelectFile={setActiveFilePath}
                 onMoveFile={(sourcePath, targetFolderPath) => {
                   setTreeData((prev) => moveFileNode(prev, sourcePath, targetFolderPath));
                 }}
@@ -517,14 +437,6 @@ impl HelloContract {
                 />
               </WithSkeleton>
             </div>
-
-            <RevisionHistoryPanel
-              databaseManager={databaseManager}
-              path={activeFilePath}
-              currentContent={sourceCode}
-              refreshKey={revisionRefreshKey}
-              onApply={setSourceCode}
-            />
 
             <button
               onClick={handleCompile}
@@ -559,6 +471,8 @@ impl HelloContract {
                 <CompileOutputTerminal logs={compileLogs} isCompiling={isCompiling} />
 
                 <TerminalPanel />
+
+                <BatchComposer />
 
                 <DependencyUpdatePanel cargoToml={DEFAULT_CARGO_TOML} />
                 <AccessibilityAuditPanel
