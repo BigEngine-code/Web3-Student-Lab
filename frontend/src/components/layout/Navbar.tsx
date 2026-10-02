@@ -1,9 +1,9 @@
 'use client';
 
-import { useAuth } from "@/contexts/AuthContext";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useAuth } from '@/contexts/AuthContext';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useState, useEffect } from 'react';
 import { LanguageSelector } from '@/components/common/LanguageSelector';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import { useWallet } from '@/contexts/WalletContext';
@@ -12,6 +12,7 @@ import { primaryNav } from '@/lib/site-data';
 import { ArrowRight, Menu, X, Sparkles, ChevronDown, LogOut } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { useKeyboardShortcuts } from '@/components/keyboard/KeyboardShortcutsProvider';
+import { CommandPaletteTrigger } from '@/components/navigation/CommandPalette';
 import MobileDrawer from './MobileDrawer';
 
 export default function Navbar() {
@@ -42,7 +43,10 @@ export default function Navbar() {
   };
 
   return (
-    <header suppressHydrationWarning className={`sticky top-0 z-50 transition-all duration-300 ${scrolled ? 'bg-black/80 border-b border-red-500/20 backdrop-blur-xl shadow-[0_10px_30px_rgba(220,38,38,0.1)]' : 'bg-transparent border-b border-white/5'}`}>
+    <header
+      suppressHydrationWarning
+      className={`sticky top-0 z-50 transition-all duration-300 ${scrolled ? 'bg-black/80 border-b border-red-500/20 backdrop-blur-xl shadow-[0_10px_30px_rgba(220,38,38,0.1)]' : 'bg-transparent border-b border-white/5'}`}
+    >
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 w-full px-4 py-4 sm:px-6 lg:px-8">
         <div className="flex shrink-0">
           <Link href="/" className="group flex items-center gap-4" onClick={() => setOpen(false)}>
@@ -85,7 +89,8 @@ export default function Navbar() {
             </Link>
             <div className="group relative">
               <button className="flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-widest text-gray-300 hover:text-white transition-colors">
-                Explore <ChevronDown className="w-4 h-4 transition-transform group-hover:rotate-180" />
+                Explore{' '}
+                <ChevronDown className="w-4 h-4 transition-transform group-hover:rotate-180" />
               </button>
               <div className="absolute top-full left-1/2 -translate-x-1/2 mt-4 w-72 rounded-2xl border border-red-500/20 bg-black/95 backdrop-blur-xl shadow-[0_20px_40px_rgba(220,38,38,0.2)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200">
                 <div className="p-3 flex flex-col gap-1">
@@ -97,8 +102,14 @@ export default function Navbar() {
                         href={item.href}
                         className={`block px-4 py-3 rounded-xl transition-all border border-transparent ${active ? 'bg-red-500/10 border-red-500/20' : 'hover:bg-white/5 hover:border-white/10'}`}
                       >
-                        <div className={`text-xs font-black uppercase tracking-widest mb-1 ${active ? 'text-white' : 'text-gray-300'}`}>{getNavLabel(item.label)}</div>
-                        <div className="text-[10px] text-gray-500 normal-case tracking-normal font-normal leading-relaxed">{item.description}</div>
+                        <div
+                          className={`text-xs font-black uppercase tracking-widest mb-1 ${active ? 'text-white' : 'text-gray-300'}`}
+                        >
+                          {getNavLabel(item.label)}
+                        </div>
+                        <div className="text-[10px] text-gray-500 normal-case tracking-normal font-normal leading-relaxed">
+                          {item.description}
+                        </div>
                       </Link>
                     );
                   })}
@@ -108,6 +119,7 @@ export default function Navbar() {
           </nav>
 
           <div className="hidden items-center gap-6 xl:flex">
+            <CommandPaletteTrigger />
             <LanguageSelector />
             {user ? (
               <>
@@ -152,7 +164,6 @@ export default function Navbar() {
               </>
             )}
           </div>
-
 
           <button
             type="button"
