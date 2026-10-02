@@ -24,7 +24,7 @@ importers:
         specifier: ^7.10.0
         version: 7.10.0
       '@prisma/client':
-        specifier: ^7.8.0
+        specifier: ^7.10.0
         version: 7.10.0(prisma@7.10.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(typescript@5.9.3)
       '@prisma/config':
         specifier: ^7.8.0
@@ -60,7 +60,7 @@ importers:
         specifier: ^5.8.0
         version: 5.8.0
       express:
-        specifier: ^4.21.2
+        specifier: ^4.22.3
         version: 4.22.3(supports-color@8.1.1)
       express-rate-limit:
         specifier: ^8.3.1
@@ -78,7 +78,7 @@ importers:
         specifier: ^6.2.1
         version: 6.3.0(graphql@16.14.2)(ws@8.21.3)
       ioredis:
-        specifier: ^5.10.1
+        specifier: ^5.11.1
         version: 5.11.1(supports-color@8.1.1)
       json2csv:
         specifier: ^6.0.0-alpha.2
@@ -90,8 +90,8 @@ importers:
         specifier: ^18.0.11
         version: 18.0.14
       openai:
-        specifier: ^6.32.0
-        version: 6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.21.3)(zod@4.6.5)
+        specifier: ^7.23.0
+        version: 7.23.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.21.3)(zod@4.6.5)
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
@@ -108,7 +108,7 @@ importers:
         specifier: ^2.17.7
         version: 2.17.7
       socket.io:
-        specifier: ^4.8.3
+        specifier: ^4.8.4
         version: 4.8.4(supports-color@8.1.1)
       swagger-jsdoc:
         specifier: ^6.3.0
@@ -199,7 +199,7 @@ importers:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@25.9.8)(supports-color@8.1.1)(ts-node@10.9.2(@types/node@25.9.8)(typescript@5.9.3))
       supertest:
-        specifier: ^7.2.2
+        specifier: ^7.3.0
         version: 7.3.0(supports-color@8.1.1)
       ts-jest:
         specifier: ^29.4.14
@@ -3891,13 +3891,15 @@ packages:
     resolution: {integrity: sha512-kbpaSSGJTWdAY5KPVeMOKXSrPtr8C8C7wodJbcsd51jRnmD+GZu8Y0VoU6Dm5Z4vWr0Ig/1NKuWRKf7j5aaYSg==}
     engines: {node: '>=6'}
 
-  openai@6.49.0:
-    resolution: {integrity: sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg==}
+  openai@7.23.0:
+    resolution: {integrity: sha512-0ecOXnFSMNWZq6cUBcTV6Lf93y+fm8BH/+QzFvpoP1UGNOE5pnytRa6HAPGCw+3IS9SIAW7rc1M8yyzN1PiBAQ==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
       '@smithy/hash-node': '>=4.3.0 <5'
       '@smithy/signature-v4': '>=5.4.0 <6'
-      ws: ^8.18.0
+      undici: '>=5 <9'
+      ws: ^8.21.0
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       '@aws-sdk/credential-provider-node':
@@ -3905,6 +3907,8 @@ packages:
       '@smithy/hash-node':
         optional: true
       '@smithy/signature-v4':
+        optional: true
+      undici:
         optional: true
       ws:
         optional: true
@@ -9378,7 +9382,7 @@ snapshots:
     dependencies:
       mimic-fn: 2.1.0
 
-  openai@6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.21.3)(zod@4.6.5):
+  openai@7.23.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.21.3)(zod@4.6.5):
     optionalDependencies:
       '@aws-sdk/credential-provider-node': 3.972.84
       '@smithy/signature-v4': 5.7.4
