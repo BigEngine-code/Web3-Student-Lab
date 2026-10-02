@@ -1181,6 +1181,7 @@ dependencies = [
 name = "lending-pool"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
