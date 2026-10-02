@@ -199,7 +199,7 @@ importers:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@25.9.8)(supports-color@8.1.1)(ts-node@10.9.2(@types/node@25.9.8)(typescript@5.9.3))
       supertest:
-        specifier: ^7.2.2
+        specifier: ^7.3.0
         version: 7.3.0(supports-color@8.1.1)
       ts-jest:
         specifier: ^29.4.12
