@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 
 const NONCE_HEADER = 'x-nonce';
 const ADMIN_ROUTE_PREFIX = '/admin';
@@ -105,6 +105,12 @@ function isValidRedirectUrl(url: string, requestUrl: URL): boolean {
 }
 
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === '/peer-review-new' || request.nextUrl.pathname === '/peer-review-new/') {
+    const destination = request.nextUrl.clone();
+    destination.pathname = '/peer-review';
+    return NextResponse.redirect(destination, 301);
+  }
+
   const ip = request.ip || request.headers.get('x-forwarded-for') || '127.0.0.1';
   const userAgent = request.headers.get('user-agent') || '';
 
@@ -134,8 +140,8 @@ export async function middleware(request: NextRequest) {
 
     // JWT and Session Validation
     const authHeader = request.headers.get('authorization');
-    const token = authHeader?.startsWith('Bearer ') 
-      ? authHeader.substring(7) 
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.substring(7)
       : request.cookies.get('admin_token')?.value;
 
     let unauthorized = true;
@@ -154,7 +160,7 @@ export async function middleware(request: NextRequest) {
     if (unauthorized) {
       const loginUrl = new URL(LOGIN_ROUTE, request.url);
       const returnPath = request.nextUrl.pathname + request.nextUrl.search;
-      
+
       if (isValidRedirectUrl(returnPath, request.nextUrl)) {
         loginUrl.searchParams.set('returnTo', returnPath);
       }
